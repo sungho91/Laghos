@@ -84,7 +84,7 @@ static void Checks(const int ti, const double norm, int &checks);
 int main(int argc, char *argv[])
 {
    // Initialize MPI.
-   MPI_Session mpi(argc, argv);
+   mfem::MPI_Session mpi(argc, argv);
    const int myid = mpi.WorldRank();
 
    // Print the banner.
