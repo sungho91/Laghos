@@ -118,6 +118,7 @@ int main(int argc, char *argv[])
    bool visualization = false;
    int vis_steps = 5;
    bool visit = false;
+   bool paraview = false;
    bool gfprint = false;
    const char *basename = "results/Laghos";
    int partition_type = 0;
@@ -174,6 +175,9 @@ int main(int argc, char *argv[])
                   "Visualize every n-th timestep.");
    args.AddOption(&visit, "-visit", "--visit", "-no-visit", "--no-visit",
                   "Enable or disable VisIt visualization.");
+   args.AddOption(&paraview, "-paraview", "--paraview-datafiles", "-no-paraview",
+                  "--no-paraview-datafiles",
+                  "Save data files for ParaView (paraview.org) visualization.");
    args.AddOption(&gfprint, "-print", "--print", "-no-print", "--no-print",
                   "Enable or disable result output (files in mfem format).");
    args.AddOption(&basename, "-k", "--outputfilename",
@@ -570,7 +574,7 @@ int main(int argc, char *argv[])
    int  visport   = 19916;
 
    ParGridFunction rho_gf;
-   if (visualization || visit) { hydro.ComputeDensity(rho_gf); }
+   if (visualization || visit || paraview) { hydro.ComputeDensity(rho_gf); }
    const double energy_init = hydro.InternalEnergy(e_gf) +
                               hydro.KineticEnergy(v_gf);
 
@@ -608,6 +612,22 @@ int main(int argc, char *argv[])
       visit_dc.SetCycle(0);
       visit_dc.SetTime(0.0);
       visit_dc.Save();
+   }
+
+   ParaViewDataCollection *pd = NULL;
+   if (paraview)
+   {
+      pd = new ParaViewDataCollection(basename, pmesh);
+      pd->SetPrefixPath("ParaView");
+      pd->RegisterField("Density",  &rho_gf);
+      pd->RegisterField("Velocity", &v_gf);
+      pd->RegisterField("Specific Internal Energy", &e_gf);
+      // pd->SetLevelsOfDetail(order);
+      pd->SetDataFormat(VTKFormat::BINARY);
+      pd->SetHighOrderOutput(true);
+      pd->SetCycle(0);
+      pd->SetTime(0.0);
+      pd->Save();
    }
 
    // Perform time-integration (looping over the time iterations, ti, with a
@@ -755,6 +775,13 @@ int main(int argc, char *argv[])
             visit_dc.SetCycle(ti);
             visit_dc.SetTime(t);
             visit_dc.Save();
+         }
+
+         if (paraview)
+         {
+            pd->SetCycle(ti);
+            pd->SetTime(t);
+            pd->Save();
          }
 
          if (gfprint)
