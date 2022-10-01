@@ -79,7 +79,7 @@ void GetPerElementMinMax(const GridFunction &gf,
 int main(int argc, char *argv[])
 {
    // Initialize MPI.
-   MPI_Session mpi(argc, argv);
+   mfem::MPI_Session mpi(argc, argv);
    int myid = mpi.WorldRank();
 
    // Print the banner.
