@@ -88,8 +88,30 @@ public:
       q1(H1.GetQuadratureInterpolator(ir)),
       q2(L2.GetQuadratureInterpolator(ir)),
       gamma_gf(gamma_gf) { }
+   
+   QUpdate(const int d, const int ne, const int q1d,
+           const bool visc, const bool vort,
+           const double dt,
+           const double cfl, TimingData *t,
+           const ParGridFunction &gamma_gf,
+           const IntegrationRule &ir,
+           ParFiniteElementSpace &h1, ParFiniteElementSpace &l2):
+      dim(d), vdim(h1.GetVDim()),
+      NQ(ir.GetNPoints()), NE(ne), Q1D(q1d),
+      use_viscosity(visc), use_vorticity(vort), cfl(cfl),
+      timer(t), ir(ir), H1(h1), L2(l2),
+      H1R(H1.GetElementRestriction(ElementDofOrdering::LEXICOGRAPHIC)),
+      q_dt_est(NE*NQ),
+      q_e(NE*NQ),
+      e_vec(NQ*NE*vdim),
+      q_dx(NQ*NE*vdim*vdim),
+      q_dv(NQ*NE*vdim*vdim),
+      q1(H1.GetQuadratureInterpolator(ir)),
+      q2(L2.GetQuadratureInterpolator(ir)),
+      gamma_gf(gamma_gf) { }
 
    void UpdateQuadratureData(const Vector &S, QuadratureData &qdata);
+   void UpdateQuadratureData(const Vector &S, QuadratureData &qdata, const double dt);
 };
 
 // Given a solutions state (x, v, e), this class performs all necessary
@@ -160,6 +182,7 @@ protected:
    }
 
    void UpdateQuadratureData(const Vector &S) const;
+   void UpdateQuadratureData(const Vector &S, const double dt) const;
    void AssembleForceMatrix() const;
 
 public:
@@ -179,16 +202,20 @@ public:
 
    // Solve for dx_dt, dv_dt and de_dt.
    virtual void Mult(const Vector &S, Vector &dS_dt) const;
+   virtual void Mult(const Vector &S, Vector &dS_dt, const double dt) const;
 
    virtual MemoryClass GetMemoryClass() const
    { return Device::GetMemoryClass(); }
 
    void SolveVelocity(const Vector &S, Vector &dS_dt) const;
    void SolveEnergy(const Vector &S, const Vector &v, Vector &dS_dt) const;
+   void SolveVelocity(const Vector &S, Vector &dS_dt, const double dt) const;
+   void SolveEnergy(const Vector &S, const Vector &v, Vector &dS_dt, const double dt) const;
    void UpdateMesh(const Vector &S) const;
 
    // Calls UpdateQuadratureData to compute the new qdata.dt_estimate.
    double GetTimeStepEstimate(const Vector &S) const;
+   double GetTimeStepEstimate(const Vector &S, const double dt) const;
    void ResetTimeStepEstimate() const;
    void ResetQuadratureData() const { qdata_is_current = false; }
 
