@@ -552,8 +552,7 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
    {
       Vector pull_force(pmesh->bdr_attributes.Max());
       pull_force = 0.0;
-      // pull_force(1) = 0.0;
-      pull_force(1) = -0.01;
+      pull_force(1) = -1.0e-2;
       f_load.Set(dim-1, new PWConstCoefficient(pull_force));
    }
 

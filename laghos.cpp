@@ -164,10 +164,10 @@ int main(int argc, char *argv[])
    bool gpu_aware_mpi = false;
    int dev = 0;
    // double blast_energy = 0.0;
-   double blast_energy = 1.0e-1;
-   // double blast_energy = 1.0e-5;
-   double blast_position[] = {0.0, 0.5, 0.0};
-   // double blast_position[] = {4.0, 0.5, 0.0};
+   // double blast_energy = 1.0e-1;
+   double blast_energy = 1.0e-5;
+   // double blast_position[] = {0.0, 0.5, 0.0};
+   double blast_position[] = {4.0, 0.5, 0.0};
 
    OptionsParser args(argc, argv);
    args.AddOption(&dim, "-dim", "--dimension", "Dimension of the problem.");
@@ -467,6 +467,8 @@ int main(int argc, char *argv[])
    Array<int> ess_tdofs, ess_vdofs;
    {
       Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
+      /*Free slip for all sides*/
+      /*
       for (int d = 0; d < pmesh->Dimension(); d++)
       {
          // Attributes 1/2/3 correspond to fixed-x/y/z boundaries,
@@ -478,16 +480,15 @@ int main(int argc, char *argv[])
          FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
          ess_vdofs.Append(dofs_list);
       }
-
-      /*
-      Boundary condition for elastic beam
+      */
+     
+      /*Boundary condition for elastic beam*/
       ess_bdr = 0; ess_bdr[0] = 1;
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
-      */
    }
 
    // Define the explicit ODE solver used for time integration.
