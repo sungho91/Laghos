@@ -28,17 +28,118 @@ void DensityIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
                                                Vector &elvect)
 {
    const int nqp = IntRule->GetNPoints();
+   const int e = Tr.ElementNo;
    Vector shape(fe.GetDof());
    elvect.SetSize(fe.GetDof());
    elvect = 0.0;
+   const int dim = fe.GetDim();
    for (int q = 0; q < nqp; q++)
    {
       fe.CalcShape(IntRule->IntPoint(q), shape);
       // Note that rhoDetJ = rho0DetJ0.
       shape *= qdata.rho0DetJ0w(Tr.ElementNo*nqp + q);
-      elvect += shape;
+      elvect += shape;      
    }
 }
+
+void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
+                                               ElementTransformation &Tr,
+                                               Vector &elvect)
+{
+   const int nqp = IntRule->GetNPoints();
+   const int e = Tr.ElementNo;
+   const int dim = fe.GetDim();
+   const int dim2 = dim*dim; 
+   Vector shape(fe.GetDof());
+   elvect.SetSize(fe.GetDof()*dim2);
+   elvect = 0.0;
+   double sxx{0.0}, sxy{0.0}, syx{0.0}, syy{0.0};
+
+   for (int q = 0; q < nqp; q++)
+   {
+      
+      fe.CalcShape(IntRule->IntPoint(q), shape);
+      const int eq = e*nqp + q; // quardature point
+      sxx = qdata.tauJinvT(0)(eq, 0);
+      sxy = qdata.tauJinvT(0)(eq, 1);
+      syx = qdata.tauJinvT(1)(eq, 0);
+      syy = qdata.tauJinvT(1)(eq, 1);
+
+      elvect[0] = elvect[0] + shape[0]*sxx;
+      elvect[1] = elvect[1] + shape[1]*sxx;
+      elvect[2] = elvect[2] + shape[2]*sxx;
+      elvect[3] = elvect[3] + shape[3]*sxx;
+
+      elvect[4] = elvect[4] + shape[0]*sxy;
+      elvect[5] = elvect[5] + shape[1]*sxy;
+      elvect[6] = elvect[6] + shape[2]*sxy;
+      elvect[7] = elvect[7] + shape[3]*sxy;
+
+      elvect[8]  = elvect[8]  + shape[0]*syx;
+      elvect[9]  = elvect[9]  + shape[1]*syx;
+      elvect[10] = elvect[10] + shape[2]*syx;
+      elvect[11] = elvect[11] + shape[3]*syx;
+
+      elvect[12]  = elvect[12]  + shape[0]*syy;
+      elvect[13]  = elvect[13]  + shape[1]*syy;
+      elvect[14]  = elvect[14]  + shape[2]*syy;
+      elvect[15]  = elvect[15]  + shape[3]*syy;
+
+   }
+}
+
+/*
+void SigmaIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
+                                             const FiniteElement &test_fe,
+                                             ElementTransformation &Tr,
+                                             DenseMatrix &elmat)
+{
+   const int e = Tr.ElementNo;
+   const int nqp = IntRule->GetNPoints();
+   const int dim = trial_fe.GetDim();
+   const int h1dofs_cnt = test_fe.GetDof();
+   const int l2dofs_cnt = trial_fe.GetDof();
+   elmat.SetSize(1, l2dofs_cnt*dim*dim);
+   elmat = 0.0;
+   
+   DenseMatrix shape(l2dofs_cnt, dim*dim),loc_force(l2dofs_cnt, dim*dim);
+   Vector Vloc_force(loc_force.Data(), l2dofs_cnt*dim*dim);
+   loc_force = 0.0;
+
+   for (int q = 0; q < nqp; q++)
+   {
+      const IntegrationPoint &ip = IntRule->IntPoint(q);
+      trial_fe.CalcDShape(ip, shape);
+      for (int i = 0; i < l2dofs_cnt; i++)
+      {
+         for (int vd = 0; vd < dim; vd++) // Velocity components.
+         {
+            for (int gd = 0; gd < dim; gd++) // Gradient components.
+            {
+               const int eq = e*nqp + q; // quardature point
+               const int offset = gd + vd*dim;
+               
+               const double tauJinvT = qdata.tauJinvT(vd)(eq, gd);
+               // loc_force(i, offset) +=  tauJinvT;
+               loc_force(i, offset) =  offset * vshape(i,offset);
+   
+
+               // if(e==1)
+               // {
+               //    std::cout << e <<" "<< vd <<" "<< gd <<" " << eq << " "<<offset<<std::endl;
+               // }
+               // loc_force(i, vd) +=  tauJinvT * vshape(i,gd);
+            }
+         }
+      }
+      // trial_fe.CalcShape(ip, shape);
+      // AddMultVWt(loc_force, shape, elmat);
+      // AddMultVWt(Vloc_force, shape, elmat);
+   }
+
+   
+}
+*/
 
 void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
                                              const FiniteElement &test_fe,
@@ -76,6 +177,7 @@ void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
       AddMultVWt(Vloc_force, shape, elmat);
    }
 }
+
 
 MassPAOperator::MassPAOperator(ParFiniteElementSpace &pfes,
                                const IntegrationRule &ir,

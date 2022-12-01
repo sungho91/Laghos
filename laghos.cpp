@@ -76,10 +76,50 @@ double e0(const Vector &);
 double rho0(const Vector &);
 double gamma_func(const Vector &);
 void v0(const Vector &, Vector &);
+void u0(const Vector &, Vector &);
 
 static long GetMaxRssMB();
 static void display_banner(std::ostream&);
 static void Checks(const int ti, const double norm, int &checks);
+
+class StressCoefficient : public VectorCoefficient
+{
+private:
+   ParGridFunction &u;
+   Coefficient &lambda, &mu;
+   DenseMatrix eps, sigma;
+   int dim;
+
+public:
+   StressCoefficient (int &_dim, ParGridFunction &_u, Coefficient &_lambda, Coefficient &_mu)
+      : VectorCoefficient(_dim), u(_u), lambda(_lambda), mu(_mu) {dim=_dim;}
+   virtual void Eval(Vector &K, ElementTransformation &T, const IntegrationPoint &ip)
+   {
+   u.GetVectorGradient(T, eps);  // eps = grad(u)
+   eps.Symmetrize();             // eps = (1/2)*(grad(u) + grad(u)^t)
+   double l = lambda.Eval(T, ip);
+   double m = mu.Eval(T, ip);
+   sigma=0.0;
+   sigma.Diag(2*eps.Trace()/3, eps.Size()); // sigma = lambda*trace(eps)*I
+   sigma.Add(2, eps);          // sigma += 2*mu*eps
+   
+   K.SetSize(dim*dim);
+   if(dim ==2)
+   {
+      K(0)=sigma(0,0); K(1)=sigma(0,1); 
+      K(2)=sigma(1,0); K(3)=sigma(1,1);
+   }
+   else if(dim ==3)
+   {
+      K(0)=sigma(0,0); K(1)=sigma(0,1); K(2)=sigma(0,2);
+      K(3)=sigma(1,0); K(4)=sigma(1,1); K(5)=sigma(1,2);
+      K(6)=sigma(2,0); K(7)=sigma(2,1); K(8)=sigma(2,2);
+   }
+   
+   }
+
+   virtual ~StressCoefficient() { }
+};
 
 int main(int argc, char *argv[])
 {
@@ -99,20 +139,21 @@ int main(int argc, char *argv[])
    Array<int> cxyz;
    int order_v = 2;
    int order_e = 1;
+   // int order_q = 3;
    int order_q = -1;
-   int ode_solver_type = 4;
+   int ode_solver_type = 7;
    double t_final = 0.6;
    double cfl = 0.5;
    double cg_tol = 1e-8;
    double ftz_tol = 0.0;
    int cg_max_iter = 300;
    int max_tsteps = -1;
-   bool p_assembly = true;
-   bool impose_visc = false;
+   bool p_assembly = false;
+   bool impose_visc = true;
    bool visualization = false;
    int vis_steps = 5;
    bool visit = false;
-   bool paraview = false;
+   bool paraview = true;
    bool gfprint = false;
    const char *basename = "results/Laghos";
    int partition_type = 0;
@@ -122,8 +163,11 @@ int main(int argc, char *argv[])
    bool fom = false;
    bool gpu_aware_mpi = false;
    int dev = 0;
-   double blast_energy = 0.25;
-   double blast_position[] = {0.0, 0.0, 0.0};
+   // double blast_energy = 0.0;
+   double blast_energy = 1.0e-1;
+   // double blast_energy = 1.0e-5;
+   double blast_position[] = {0.0, 0.5, 0.0};
+   // double blast_position[] = {4.0, 0.5, 0.0};
 
    OptionsParser args(argc, argv);
    args.AddOption(&dim, "-dim", "--dimension", "Dimension of the problem.");
@@ -416,6 +460,7 @@ int main(int argc, char *argv[])
    H1_FECollection H1FEC(order_v, dim);
    ParFiniteElementSpace L2FESpace(pmesh, &L2FEC);
    ParFiniteElementSpace H1FESpace(pmesh, &H1FEC, pmesh->Dimension());
+   ParFiniteElementSpace L2FESpace_2(pmesh, &L2FEC, dim*dim); // three varibles for 2D, six varibles for 3D
 
    // Boundary conditions: all tests use v.n = 0 on the boundary, and we assume
    // that the boundaries are straight.
@@ -433,6 +478,16 @@ int main(int argc, char *argv[])
          FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
          ess_vdofs.Append(dofs_list);
       }
+
+      /*
+      Boundary condition for elastic beam
+      ess_bdr = 0; ess_bdr[0] = 1;
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+      */
    }
 
    // Define the explicit ODE solver used for time integration.
@@ -469,36 +524,43 @@ int main(int argc, char *argv[])
    // - 0 -> position
    // - 1 -> velocity
    // - 2 -> specific internal energy
+   // - 3 -> stress rate
    const int Vsize_l2 = L2FESpace.GetVSize();
    const int Vsize_h1 = H1FESpace.GetVSize();
-   Array<int> offset(4);
+   // Array<int> offset(4);
+   Array<int> offset(5); 
    offset[0] = 0;
    offset[1] = offset[0] + Vsize_h1;
    offset[2] = offset[1] + Vsize_h1;
    offset[3] = offset[2] + Vsize_l2;
+   offset[4] = offset[3] + Vsize_l2*dim*dim;
    BlockVector S(offset, Device::GetMemoryType());
 
    // Define GridFunction objects for the position, velocity and specific
    // internal energy. There is no function for the density, as we can always
    // compute the density values given the current mesh position, using the
    // property of pointwise mass conservation.
-   ParGridFunction x_gf, v_gf, e_gf;
+   // ParGridFunction x_gf, v_gf, e_gf; //ParGridFunction x_gf, v_gf, e_gf;
+   ParGridFunction x_gf, v_gf, e_gf, s_gf;
    x_gf.MakeRef(&H1FESpace, S, offset[0]);
    v_gf.MakeRef(&H1FESpace, S, offset[1]);
    e_gf.MakeRef(&L2FESpace, S, offset[2]);
+   s_gf.MakeRef(&L2FESpace_2, S, offset[3]);
 
    // Initialize x_gf using the starting mesh coordinates.
    pmesh->SetNodalGridFunction(&x_gf);
    // Sync the data location of x_gf with its base, S
    x_gf.SyncAliasMemory(S);
-
+   
    // Initialize the velocity.
    VectorFunctionCoefficient v_coeff(pmesh->Dimension(), v0);
    v_gf.ProjectCoefficient(v_coeff);
    for (int i = 0; i < ess_vdofs.Size(); i++)
    {
       v_gf(ess_vdofs[i]) = 0.0;
+      // std::cout<<i << " "<<ess_vdofs[i] <<" "<< x_gf(ess_vdofs[i])<<std::endl;
    }
+  
    // Sync the data location of v_gf with its base, S
    v_gf.SyncAliasMemory(S);
 
@@ -515,6 +577,7 @@ int main(int argc, char *argv[])
    ParGridFunction l2_rho0_gf(&l2_fes), l2_e(&l2_fes);
    l2_rho0_gf.ProjectCoefficient(rho0_coeff);
    rho0_gf.ProjectGridFunction(l2_rho0_gf);
+
    if (problem == 1)
    {
       // For the Sedov test, we use a delta function at the origin.
@@ -531,6 +594,65 @@ int main(int argc, char *argv[])
    // Sync the data location of e_gf with its base, S
    e_gf.SyncAliasMemory(S);
 
+   // Piecewise constant elastic stiffness over the Lagrangian mesh.
+   // Lambda and Mu is Lame's first and second constants
+   Vector lambda(pmesh->attributes.Max());
+   lambda = 1.0;
+   PWConstCoefficient lambda_func(lambda);
+   Vector mu(pmesh->attributes.Max());
+   mu = 1.0;
+   PWConstCoefficient mu_func(mu);
+   
+   // Project PWConstCoefficient to grid function
+   L2_FECollection lambda_fec(order_e, pmesh->Dimension());
+   ParFiniteElementSpace lambda_fes(pmesh, &lambda_fec);
+   ParGridFunction lambda_gf(&lambda_fes);
+   lambda_gf.ProjectCoefficient(lambda_func);
+   
+   L2_FECollection mu_fec(order_e, pmesh->Dimension());
+   ParFiniteElementSpace mu_fes(pmesh, &mu_fec);
+   ParGridFunction mu_gf(&mu_fes);
+   mu_gf.ProjectCoefficient(mu_func);
+
+   
+   StressCoefficient stress_coef(dim, v_gf, lambda_func, mu_func);
+   s_gf.ProjectCoefficient(stress_coef);
+   s_gf=0.0;
+   // for( int i = 0; i < mu_gf.Size(); i++ ) 
+   // {  
+   //    // s_gf[i+0*mu_gf.Size()] = i;
+   //    // s_gf[i+1*mu_gf.Size()] = 2;
+   //    // s_gf[i+2*mu_gf.Size()] = 3;
+   //    // s_gf[i+3*mu_gf.Size()] = 4;
+   // }
+   s_gf.SyncAliasMemory(S);
+
+   ParGridFunction test_gf(&L2FESpace_2); 
+   test_gf.ProjectCoefficient(stress_coef);
+
+   /*
+   // Define GridFunction objects for the initial position and displacement. 
+   Array<int> offset2(3);
+   offset2[0] = 0;
+   offset2[1] = offset2[0] + Vsize_h1;
+   offset2[2] = offset2[1] + Vsize_h1;
+   BlockVector S2(offset2, Device::GetMemoryType());
+
+   ParGridFunction x0_gf, u_gf;
+   x0_gf.MakeRef(&H1FESpace, S2, offset2[0]);
+   u_gf.MakeRef(&H1FESpace, S2, offset2[1]);
+
+   // Initialize x_gf using the starting mesh coordinates.
+   pmesh->SetNodalGridFunction(&x0_gf);
+   // Sync the data location of x0_gf with its base, S2
+   x0_gf.SyncAliasMemory(S2);
+
+   // Initialize the displacement
+   for( int i = 0; i < u_gf.Size(); i++ ) {u_gf[i] = x_gf[i]-x0_gf[i];}
+   // Sync the data location of u_gf with its base, S2
+   u_gf.SyncAliasMemory(S2);
+   */
+   
    // Piecewise constant ideal gas coefficient over the Lagrangian mesh. The
    // gamma values are projected on function that's constant on the moving mesh.
    L2_FECollection mat_fec(0, pmesh->Dimension());
@@ -538,9 +660,36 @@ int main(int argc, char *argv[])
    ParGridFunction mat_gf(&mat_fes);
    FunctionCoefficient mat_coeff(gamma_func);
    mat_gf.ProjectCoefficient(mat_coeff);
+   
+   
+   /*
+   // Initialize stress tensor
+   L2_FECollection sig_fec(order_e, pmesh->Dimension());
+   // ParFiniteElementSpace sig_fespace(pmesh, &sig_fec);
+   ParFiniteElementSpace sig_fespace(pmesh, &sig_fec, dim*dim);
+   ParGridFunction sigma_gf(&sig_fespace); 
+   StressCoefficient stress_coef(dim, v_gf, lambda_func, mu_func);
+   sigma_gf.ProjectCoefficient(stress_coef);
+   */
 
+   // Vectors for stress and spin rate at quardracture points
+   const IntegrationRule &irs = IntRules.Get(pmesh->GetElementBaseGeometry(0), \
+   ((order_q > 0) ? order_q : 3 * H1FESpace.GetOrder(0) + L2FESpace.GetOrder(0) - 1));
+
+   Vector old_stress(NE*irs.GetNPoints()*dim*dim); // vector for previous stress at values at quardrature points
+   Vector inc_stress(NE*irs.GetNPoints()*dim*dim); // vector for previous stress at values at quardrature points
+   Vector cur_spin(NE*irs.GetNPoints()*dim*dim); // vector for current (temporal) spin rate at values at quardrature points
+   Vector old_spin(NE*irs.GetNPoints()*dim*dim); // vector for previous spin rate at values at quardrature points
+   old_stress=0.0;
+   inc_stress=0.0;
+   cur_spin=0.0;
+   old_spin=0.0;
+
+   // for( int i = 0; i < old_stress.Size(); i++ ) {std::cout<< old_stress[i] << std::endl;}
+
+   // std::cout<< mu_gf.Size() << "/"<< lambda_gf.Size() << "/"<< sigma_gf.Size() << std::endl;
    // Additional details, depending on the problem.
-   int source = 0; bool visc = true, vorticity = false;
+   int source = 0; bool visc = false, vorticity = false;
    switch (problem)
    {
       case 0: if (pmesh->Dimension() == 2) { source = 1; } visc = false; break;
@@ -556,12 +705,12 @@ int main(int argc, char *argv[])
    if (impose_visc) { visc = true; }
 
    hydrodynamics::LagrangianHydroOperator hydro(S.Size(),
-                                                H1FESpace, L2FESpace, ess_tdofs,
+                                                H1FESpace, L2FESpace, L2FESpace_2, ess_tdofs,
                                                 rho0_coeff, rho0_gf,
                                                 mat_gf, source, cfl,
                                                 visc, vorticity, p_assembly,
                                                 cg_tol, cg_max_iter, ftz_tol,
-                                                order_q);
+                                                order_q, old_stress, inc_stress, cur_spin, old_spin);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
@@ -603,6 +752,8 @@ int main(int argc, char *argv[])
       visit_dc.RegisterField("Density",  &rho_gf);
       visit_dc.RegisterField("Velocity", &v_gf);
       visit_dc.RegisterField("Specific Internal Energy", &e_gf);
+      // visit_dc.RegisterField("stress xx", &mu_gf);
+      // visit_dc.RegisterField("stress yy", &lambda_gf);
       visit_dc.SetCycle(0);
       visit_dc.SetTime(0.0);
       visit_dc.Save();
@@ -616,6 +767,8 @@ int main(int argc, char *argv[])
       pd->RegisterField("Density",  &rho_gf);
       pd->RegisterField("Velocity", &v_gf);
       pd->RegisterField("Specific Internal Energy", &e_gf);
+      pd->RegisterField("stress", &s_gf);
+      pd->RegisterField("test", &test_gf);
       // pd->SetLevelsOfDetail(order);
       pd->SetDataFormat(VTKFormat::BINARY);
       pd->SetHighOrderOutput(true);
@@ -629,7 +782,8 @@ int main(int argc, char *argv[])
    // defines the Mult() method that used by the time integrators.
    ode_solver->Init(hydro);
    hydro.ResetTimeStepEstimate();
-   double t = 0.0, dt = hydro.GetTimeStepEstimate(S), t_old;
+   double t = 0.0, dt = 0.0, t_old;
+   dt = hydro.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
    bool last_step = false;
    int steps = 0;
    BlockVector S_old(S);
@@ -674,7 +828,8 @@ int main(int argc, char *argv[])
       steps++;
 
       // Adaptive time step control.
-      const double dt_est = hydro.GetTimeStepEstimate(S);
+      const double dt_est = hydro.GetTimeStepEstimate(S, dt);
+      // const double dt_est = hydro.GetTimeStepEstimate(S);
       if (dt_est < dt)
       {
          // Repeat (solve again) with a decreased time step - decrease of the
@@ -697,6 +852,14 @@ int main(int argc, char *argv[])
       x_gf.SyncAliasMemory(S);
       v_gf.SyncAliasMemory(S);
       e_gf.SyncAliasMemory(S);
+      s_gf.SyncAliasMemory(S);
+
+      test_gf.ProjectCoefficient(stress_coef);
+
+      // Adding stress increment to total stress and storing spin rate
+
+      inc_stress.Add(1.0, old_stress);
+      old_spin.Set(1.0, cur_spin);
 
       // Make sure that the mesh corresponds to the new solution state. This is
       // needed, because some time integrators use different S-type vectors
@@ -763,6 +926,15 @@ int main(int argc, char *argv[])
                                           Wx, Wy, Ww,Wh);
             Wx += offx;
          }
+
+         // for( int i = 0; i < lambda_gf.Size(); i++ ) 
+         // {
+         //    // std::cout << i << " " << i+lambda_gf.Size()*3 << std::endl;
+         //    mu_gf[i] = sigma_gf[i];
+         //    lambda_gf[i] = sigma_gf[i+lambda_gf.Size()*3];
+         // }
+
+         // sigma_gf.ProjectCoefficient(stress_coef);
 
          if (visit)
          {
@@ -935,6 +1107,19 @@ double gamma_func(const Vector &x)
 
 static double rad(double x, double y) { return sqrt(x*x + y*y); }
 
+void u0(const Vector &x, Vector &v)
+{
+   if (x.Size() == 2)
+   {
+      v(0) =  0.0; v(1) =  0.0;
+   }
+   else if (x.Size() == 3)
+   {
+      v(0) =  0.0; v(1) =  0.0; v(2) =  0.0;
+   }
+   
+}
+
 void v0(const Vector &x, Vector &v)
 {
    const double atn = dim!=1 ? pow((x(0)*(1.0-x(0))*4*x(1)*(1.0-x(1))*4.0),
@@ -951,7 +1136,14 @@ void v0(const Vector &x, Vector &v)
             v(2) = 0.0;
          }
          break;
-      case 1: v = 0.0; break;
+      case 1: 
+         v = 0.0; 
+         
+         if(x(0) == 8)
+         {
+            v(1)=-0.01;
+         } 
+         break;
       case 2: v = 0.0; break;
       case 3: v = 0.0; break;
       case 4:

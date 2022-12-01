@@ -47,6 +47,10 @@ struct QuadratureData
    // conservation.
    Vector rho0DetJ0w;
 
+   // Quadrature data used for full/partial assembly of the stress rate operator.
+   DenseTensor tauJinvT;
+   // Vector tauJinvT;
+
    // Initial length scale. This represents a notion of local mesh size.
    // We assume that all initial zones have similar size.
    double h0;
@@ -58,6 +62,7 @@ struct QuadratureData
    QuadratureData(int dim, int NE, int quads_per_el)
       : Jac0inv(dim, dim, NE * quads_per_el),
         stressJinvT(NE * quads_per_el, dim, dim),
+        tauJinvT(NE * quads_per_el, dim, dim),
         rho0DetJ0w(NE * quads_per_el) { }
 };
 
@@ -77,6 +82,34 @@ public:
                                        Vector &elvect);
 };
 
+class SigmaIntegrator : public LinearFormIntegrator
+{
+   using LinearFormIntegrator::AssembleRHSElementVect;
+private:
+   const QuadratureData &qdata;
+
+public:
+   SigmaIntegrator(QuadratureData &qdata) : qdata(qdata) { }
+   virtual void AssembleRHSElementVect(const FiniteElement &fe,
+                                       ElementTransformation &Tr,
+                                       Vector &elvect);
+};
+
+/*
+class SigmaIntegrator : public BilinearFormIntegrator
+{
+private:
+   const QuadratureData &qdata;
+public:
+   SigmaIntegrator(QuadratureData &qdata) : qdata(qdata) { }
+   virtual void AssembleElementMatrix2(const FiniteElement &trial_fe,
+                                       const FiniteElement &test_fe,
+                                       ElementTransformation &Tr,
+                                       DenseMatrix &elmat);
+};
+*/
+
+
 // Performs full assembly for the force operator.
 class ForceIntegrator : public BilinearFormIntegrator
 {
@@ -89,6 +122,7 @@ public:
                                        ElementTransformation &Tr,
                                        DenseMatrix &elmat);
 };
+
 
 // Performs partial assembly for the force operator.
 class ForcePAOperator : public Operator
