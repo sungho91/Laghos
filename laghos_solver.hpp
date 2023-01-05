@@ -188,7 +188,7 @@ protected:
    CGSolver CG_VMass, CG_EMass;
    mutable TimingData timer;
    mutable QUpdate *qupdate;
-   mutable Vector X, B, one, rhs, e_rhs, sig_rhs, sig_one;
+   mutable Vector X, B, one, rhs, v_damping, e_rhs, sig_rhs, sig_one;
    mutable ParGridFunction rhs_c_gf, dvc_gf;
    mutable Array<int> c_tdofs[3];
 
@@ -239,6 +239,7 @@ public:
    void SolveEnergy(const Vector &S, const Vector &v, Vector &dS_dt, const double dt) const;
    void SolveStress(const Vector &S, Vector &dS_dt, const double dt) const;
    void UpdateMesh(const Vector &S) const;
+   void Getdamping(const Vector &S, Vector &_v_damping) const;
 
    // Calls UpdateQuadratureData to compute the new qdata.dt_estimate.
    // double GetTimeStepEstimate(const Vector &S) const;

@@ -37,6 +37,15 @@
         "cstddef": "cpp",
         "cstring": "cpp",
         "ctime": "cpp",
-        "iomanip": "cpp"
+        "iomanip": "cpp",
+        "bit": "cpp",
+        "complex": "cpp",
+        "deque": "cpp",
+        "map": "cpp",
+        "set": "cpp",
+        "vector": "cpp",
+        "functional": "cpp",
+        "memory": "cpp",
+        "numeric": "cpp"
     }
 }

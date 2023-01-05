@@ -49,12 +49,34 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
    const int nqp = IntRule->GetNPoints();
    const int e = Tr.ElementNo;
    const int dim = fe.GetDim();
-   const int dim2 = dim*dim; 
+   const int dim2 = dim*dim;
+   const int num = fe.GetDof(); 
+
    Vector shape(fe.GetDof());
    elvect.SetSize(fe.GetDof()*dim2);
    elvect = 0.0;
    double sxx{0.0}, sxy{0.0}, syx{0.0}, syy{0.0};
 
+   for (int q = 0; q < nqp; q++)
+   {
+      
+      fe.CalcShape(IntRule->IntPoint(q), shape);
+      const int eq = e*nqp + q; // quardature point
+      sxx = qdata.tauJinvT(0)(eq, 0);
+      sxy = qdata.tauJinvT(0)(eq, 1);
+      syx = qdata.tauJinvT(1)(eq, 0);
+      syy = qdata.tauJinvT(1)(eq, 1);
+
+      for (int i = 0; i < num; i++)
+      {
+         elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
+         elvect[i+num*1] = elvect[i+num*1] + shape[i]*sxy;
+         elvect[i+num*2] = elvect[i+num*2] + shape[i]*sxy;
+         elvect[i+num*3] = elvect[i+num*3] + shape[i]*syy;
+
+      }
+   }
+   /*
    for (int q = 0; q < nqp; q++)
    {
       
@@ -86,6 +108,7 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
       elvect[15]  = elvect[15]  + shape[3]*syy;
 
    }
+   */
 }
 
 /*

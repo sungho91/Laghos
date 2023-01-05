@@ -137,8 +137,8 @@ int main(int argc, char *argv[])
    int rs_levels = 2;
    int rp_levels = 0;
    Array<int> cxyz;
-   int order_v = 2;
-   int order_e = 1;
+   int order_v = 3;
+   int order_e = 2;
    // int order_q = 3;
    int order_q = -1;
    int ode_solver_type = 7;
@@ -151,7 +151,7 @@ int main(int argc, char *argv[])
    bool p_assembly = false;
    bool impose_visc = true;
    bool visualization = false;
-   int vis_steps = 5;
+   int vis_steps = 100;
    bool visit = false;
    bool paraview = true;
    bool gfprint = false;
@@ -163,11 +163,14 @@ int main(int argc, char *argv[])
    bool fom = false;
    bool gpu_aware_mpi = false;
    int dev = 0;
-   // double blast_energy = 0.0;
+   double blast_energy = 0.0;
+   double init_dt = 1e-1;
    // double blast_energy = 1.0e-1;
-   double blast_energy = 1.0e-5;
+   // double blast_energy = 1.0e-6;
    // double blast_position[] = {0.0, 0.5, 0.0};
-   double blast_position[] = {4.0, 0.5, 0.0};
+   double blast_position[] = {8.0, 0.5, 0.0};
+   // double blast_energy2 = 0.1;
+   // double blast_position2[] = {8.0, 0.5};
 
    OptionsParser args(argc, argv);
    args.AddOption(&dim, "-dim", "--dimension", "Dimension of the problem.");
@@ -484,6 +487,7 @@ int main(int argc, char *argv[])
      
       /*Boundary condition for elastic beam*/
       ess_bdr = 0; ess_bdr[0] = 1;
+      ess_bdr[1] = 1;
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
@@ -558,10 +562,26 @@ int main(int argc, char *argv[])
    v_gf.ProjectCoefficient(v_coeff);
    for (int i = 0; i < ess_vdofs.Size(); i++)
    {
-      v_gf(ess_vdofs[i]) = 0.0;
+      // v_gf(ess_vdofs[i]) = 0.0;
       // std::cout<<i << " "<<ess_vdofs[i] <<" "<< x_gf(ess_vdofs[i])<<std::endl;
    }
+
+   // For the Sedov test, we use a delta function at the origin.
+   // Vector dir(pmesh->Dimension());
+   // L2_FECollection h1_fec(order_v, pmesh->Dimension());
+   // ParFiniteElementSpace h1_fes(pmesh, &h1_fec);
+   // ParGridFunction h1_v(&h1_fes);
+   // dir=0.0;
+   // dir(1)=1.0;
+   // // VectorDeltaCoefficient v2_coeff(pmesh->Dimension());
+   // // v2_coeff.SetScale(blast_energy2);
+   // // v2_coeff.SetDeltaCenter(cent);
+   // // v2_coeff.SetDirection(dir);
+   // VectorDeltaCoefficient v2_coeff(dir, blast_position2[0], blast_position2[1], blast_energy2);
   
+   // h1_v.ProjectCoefficient(v2_coeff);
+   // // v_gf.ProjectGridFunction(h1_v);
+
    // Sync the data location of v_gf with its base, S
    v_gf.SyncAliasMemory(S);
 
@@ -619,13 +639,6 @@ int main(int argc, char *argv[])
    StressCoefficient stress_coef(dim, v_gf, lambda_func, mu_func);
    s_gf.ProjectCoefficient(stress_coef);
    s_gf=0.0;
-   // for( int i = 0; i < mu_gf.Size(); i++ ) 
-   // {  
-   //    // s_gf[i+0*mu_gf.Size()] = i;
-   //    // s_gf[i+1*mu_gf.Size()] = 2;
-   //    // s_gf[i+2*mu_gf.Size()] = 3;
-   //    // s_gf[i+3*mu_gf.Size()] = 4;
-   // }
    s_gf.SyncAliasMemory(S);
 
    ParGridFunction test_gf(&L2FESpace_2); 
@@ -686,9 +699,6 @@ int main(int argc, char *argv[])
    cur_spin=0.0;
    old_spin=0.0;
 
-   // for( int i = 0; i < old_stress.Size(); i++ ) {std::cout<< old_stress[i] << std::endl;}
-
-   // std::cout<< mu_gf.Size() << "/"<< lambda_gf.Size() << "/"<< sigma_gf.Size() << std::endl;
    // Additional details, depending on the problem.
    int source = 0; bool visc = false, vorticity = false;
    switch (problem)
@@ -785,6 +795,7 @@ int main(int argc, char *argv[])
    hydro.ResetTimeStepEstimate();
    double t = 0.0, dt = 0.0, t_old;
    dt = hydro.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
+   dt = init_dt;
    bool last_step = false;
    int steps = 0;
    BlockVector S_old(S);
@@ -815,6 +826,7 @@ int main(int argc, char *argv[])
    {
       if (t + dt >= t_final)
       {
+         // std::cout<< t << " "<<dt <<std::endl;
          dt = t_final - t;
          last_step = true;
       }
@@ -1065,7 +1077,7 @@ double rho0(const Vector &x)
    switch (problem)
    {
       case 0: return 1.0;
-      case 1: return 1.0;
+      case 1: return 1.00;
       case 2: return (x(0) < 0.5) ? 1.0 : 0.1;
       case 3: return (dim == 2) ? (x(0) > 1.0 && x(1) > 1.5) ? 0.125 : 1.0
                         : x(0) > 1.0 && ((x(1) < 1.5 && x(2) < 1.5) ||
@@ -1125,6 +1137,7 @@ void v0(const Vector &x, Vector &v)
 {
    const double atn = dim!=1 ? pow((x(0)*(1.0-x(0))*4*x(1)*(1.0-x(1))*4.0),
                                    0.4) : 0.0;
+   const double s = 0.1/64.;
    switch (problem)
    {
       case 0:
@@ -1138,12 +1151,26 @@ void v0(const Vector &x, Vector &v)
          }
          break;
       case 1: 
-         v = 0.0; 
+         v = 0.0;
+         // v(dim-1) = -s*x(0)*x(0);
+         // v(dim-1) = -s*exp(-1*(x(0)-4.0)*(x(0)-4.0)/2/1);
+         // v(dim-1) = s*x(0)*x(0)*(8.0-x(0));
+         // v(0) = -s*x(0)*x(0);
          
+         if(x(0) == 0)
+         {
+            // v = 0.0;
+            // v(0)=-0.01;
+            // v(1)=-0.01;
+         }
+
          if(x(0) == 8)
          {
+            // v = 0.0;
+            // v(0)=-0.01;
             v(1)=-0.01;
          } 
+
          break;
       case 2: v = 0.0; break;
       case 3: v = 0.0; break;

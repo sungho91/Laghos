@@ -156,6 +156,7 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    B(H1c.GetTrueVSize()),
    one(L2Vsize),
    rhs(H1Vsize),
+   v_damping(H1Vsize),
    e_rhs(L2Vsize),
    sig_rhs(dim*dim*L2Vsize),
    sig_one(dim*H1Vsize),
@@ -526,6 +527,7 @@ void LagrangianHydroOperator::Mult(const Vector &S, Vector &dS_dt, const double 
 void LagrangianHydroOperator::SolveVelocity(const Vector &S,
                                             Vector &dS_dt, const double dt) const
 {
+   // std::cout<<"SolveVelocity"<<std::endl;
    UpdateQuadratureData(S, dt);
    AssembleForceMatrix();
    // The monolithic BlockVector stores the unknown fields as follows:
@@ -552,7 +554,8 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
    {
       Vector pull_force(pmesh->bdr_attributes.Max());
       pull_force = 0.0;
-      pull_force(1) = -1.0e-2;
+      // pull_force(1) = -1.0e-2;
+      pull_force(1) = 0.0;
       f_load.Set(dim-1, new PWConstCoefficient(pull_force));
    }
 
@@ -561,8 +564,6 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
    v_source->AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(f_load));
    v_source->Assemble();
 
-   // #endif
-
    if (p_assembly)
    {
       timer.sw_force.Start();
@@ -570,7 +571,8 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
       timer.sw_force.Stop();
       rhs.Neg(); // -F
 
-      rhs += *v_source;
+      // v_damping.Mult()
+      // rhs += *v_source;
       // if (v_source) {rhs += *v_source; }
 
       // Partial assembly solve for each velocity component
@@ -617,8 +619,12 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
       Force.Mult(one, rhs);
       timer.sw_force.Stop();
       rhs.Neg();
+      // rhs += *v_source;
 
-      rhs += *v_source;
+      v_damping=0.0;
+      v_damping.Add(1.0, rhs);
+      Getdamping(S, v_damping);
+      rhs.Add(-1.0, v_damping);
       
       if (source_type == 2)
       {
@@ -650,11 +656,7 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
 void LagrangianHydroOperator::SolveEnergy(const Vector &S, const Vector &v,
                                           Vector &dS_dt, const double dt) const
 {
-   // std::cout<<"before assembly" <<std::endl;
-   // for (int i = 0; i < e_rhs.Size(); i++)
-   // {
-   //    std::cout<< i <<" "<<e_rhs[i]<<std::endl;
-   // }
+   // std::cout<<"SolveEnergy"<<std::endl;
 
    UpdateQuadratureData(S, dt);
    AssembleForceMatrix();
@@ -794,6 +796,26 @@ void LagrangianHydroOperator::UpdateMesh(const Vector &S) const
    Vector* sptr = const_cast<Vector*>(&S);
    x_gf.MakeRef(&H1, *sptr, 0);
    H1.GetParMesh()->NewNodes(x_gf, false);
+}
+
+void LagrangianHydroOperator::Getdamping(const Vector &S, Vector &_v_damping) const
+{
+   Vector* sptr = const_cast<Vector*>(&S);
+   ParGridFunction v;
+   v.MakeRef(&H1, *sptr, H1.GetVSize());
+   // for( int i = 0; i < v.Size(); i++ ){_v_damping[i] = 1.0*(v[i]/fabs(v[i]))*fabs(_v_damping[i]);}
+   for( int i = 0; i < v.Size(); i++ )
+   {  
+      if(v[i] >= 0)
+      {
+         _v_damping[i] = 0.05*fabs(_v_damping[i]);
+      }
+      else
+      {
+         _v_damping[i] = -0.05*fabs(_v_damping[i]);
+      }
+
+   }
 }
 
 // double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S) const
@@ -1200,6 +1222,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
                const double eps = 1e-12;
                visc_coeff += 0.5 * rho * h * sound_speed * vorticity_coeff *
                              (1.0 - smooth_step_01(mu - 2.0 * eps, eps));
+               // stress.Add(0.0, sgrad_v);
                stress.Add(visc_coeff, sgrad_v);
             }
             // Time step estimate at the point. Here the more relevant length
@@ -1350,6 +1373,8 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
             const double detJ = Jpr.Det(), rho = rho_b[z*nqp + q],
                          p = p_b[z*nqp + q], sound_speed = cs_b[z*nqp + q];
             stress = 0.0; tau0 = 0.0; tau1 = 0.0; old_sig = 0.0;
+            
+            // for (int d = 0; d < dim; d++) { stress(d, d) = 0; }
             for (int d = 0; d < dim; d++) { stress(d, d) = -p; }
             for (int d = 0; d < dim; d++) { tau1(d, d) = 1.0;} // Identity matrix
 
@@ -1377,7 +1402,6 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                   const double div_v = fabs(sgrad_v.Trace());
                   vorticity_coeff = (grad_norm > 0.0) ? div_v / grad_norm : 1.0;
                }
-
                // copy sgrad_v to srate and then symmetrize srate.
                srate = sgrad_v;
                srate.Symmetrize();
@@ -1410,9 +1434,8 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                visc_coeff += 0.5 * rho * h * sound_speed * vorticity_coeff *
                              (1.0 - smooth_step_01(mu - 2.0 * eps, eps));
 
-
-               // visc_coeff = 0.0;
                stress.Add(visc_coeff, sgrad_v);
+               // stress.Add(0.0, sgrad_v);
                // stress=0.0;
                // for (int d = 0; d < dim; d++) { stress(d, d) = (lame1+2*lame2)*sgrad_v.Trace()/3; }
 
@@ -1421,8 +1444,9 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                // #if
                
                tau0.Set(2*lame2, srate); // 
-               tau1.Set(2*lame2*sgrad_v.Trace()/3, tau1); // 2*shear_mod*divergence(velocity gradient)*(1/3)*Identity
-               tau0.Add(-1.0, tau1); // deviatoric stress for s_ij grid function.
+               tau1.Set(2*lame1*srate.Trace()/dim, tau1); // 2*lamda*divergence(velocity gradient)*(1/dim)*Identity
+               tau0.Add(1.0, tau1); // stress rate for s_ij grid function.
+               // tau0.Add(-1.0, tau1); // deviatoric stress rate for s_ij grid function.
                
                mfem::Mult(old_sig, spin, crot1);
                mfem::Mult(spin, old_sig, crot2);
@@ -2317,6 +2341,7 @@ void LagrangianHydroOperator::AssembleSigmaMatrix() const
 
 void HydroODESolver::Init(TimeDependentOperator &tdop)
 {
+   // std::cout<<"Initiate ODE solver" <<std::endl;
    ODESolver::Init(tdop);
    hydro_oper = dynamic_cast<hydrodynamics::LagrangianHydroOperator *>(f);
    MFEM_VERIFY(hydro_oper, "HydroSolvers expect LagrangianHydroOperator.");
