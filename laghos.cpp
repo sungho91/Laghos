@@ -111,9 +111,13 @@ public:
    }
    else if(dim ==3)
    {
-      K(0)=sigma(0,0); K(1)=sigma(0,1); K(2)=sigma(0,2);
-      K(3)=sigma(1,0); K(4)=sigma(1,1); K(5)=sigma(1,2);
-      K(6)=sigma(2,0); K(7)=sigma(2,1); K(8)=sigma(2,2);
+      K(0)=1; K(1)=2; K(2)=3;
+      K(3)=4; K(4)=5; K(5)=6;
+      K(6)=7; K(7)=8; K(8)=9;
+
+      // K(0)=sigma(0,0); K(1)=sigma(0,1); K(2)=sigma(0,2);
+      // K(3)=sigma(1,0); K(4)=sigma(1,1); K(5)=sigma(1,2);
+      // K(6)=sigma(2,0); K(7)=sigma(2,1); K(8)=sigma(2,2);
    }
    
    }
@@ -137,12 +141,12 @@ int main(int argc, char *argv[])
    int rs_levels = 2;
    int rp_levels = 0;
    Array<int> cxyz;
-   int order_v = 3;
-   int order_e = 2;
+   int order_v = 2;
+   int order_e = 1;
    // int order_q = 3;
    int order_q = -1;
    int ode_solver_type = 7;
-   double t_final = 0.6;
+   double t_final = 1.0;
    double cfl = 0.5;
    double cg_tol = 1e-8;
    double ftz_tol = 0.0;
@@ -164,7 +168,9 @@ int main(int argc, char *argv[])
    bool gpu_aware_mpi = false;
    int dev = 0;
    double blast_energy = 0.0;
-   double init_dt = 1e-1;
+   bool year = false;
+   double init_dt = 1.0;
+   // double init_dt = 1e-1;
    // double blast_energy = 1.0e-1;
    // double blast_energy = 1.0e-6;
    // double blast_position[] = {0.0, 0.5, 0.0};
@@ -250,6 +256,20 @@ int main(int argc, char *argv[])
       return 1;
    }
    if (mpi.Root()) { args.PrintOptions(cout); }
+
+   if (mpi.Root()) 
+   {
+   if(year)
+   {
+      t_final = t_final * 86400 * 365.25;
+      std::cout << "Use years in output instead of seconds is true" << std::endl;
+   }
+   else
+   {
+      // init_dt = 1e-1;
+      std::cout << "Use secondss in output instead of years is true" << std::endl;
+   }
+   }
 
    // Configure the device from the command line options
    Device backend;
@@ -488,6 +508,7 @@ int main(int argc, char *argv[])
       /*Boundary condition for elastic beam*/
       ess_bdr = 0; ess_bdr[0] = 1;
       ess_bdr[1] = 1;
+      // if(dim == 3){ess_bdr[1] = 1;}
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
@@ -618,22 +639,24 @@ int main(int argc, char *argv[])
    // Piecewise constant elastic stiffness over the Lagrangian mesh.
    // Lambda and Mu is Lame's first and second constants
    Vector lambda(pmesh->attributes.Max());
+   // lambda = 3.0e10;
    lambda = 1.0;
    PWConstCoefficient lambda_func(lambda);
    Vector mu(pmesh->attributes.Max());
+   // mu = 3.0e10;
    mu = 1.0;
    PWConstCoefficient mu_func(mu);
    
    // Project PWConstCoefficient to grid function
    L2_FECollection lambda_fec(order_e, pmesh->Dimension());
    ParFiniteElementSpace lambda_fes(pmesh, &lambda_fec);
-   ParGridFunction lambda_gf(&lambda_fes);
-   lambda_gf.ProjectCoefficient(lambda_func);
+   ParGridFunction lambda0_gf(&lambda_fes);
+   lambda0_gf.ProjectCoefficient(lambda_func);
    
    L2_FECollection mu_fec(order_e, pmesh->Dimension());
    ParFiniteElementSpace mu_fes(pmesh, &mu_fec);
-   ParGridFunction mu_gf(&mu_fes);
-   mu_gf.ProjectCoefficient(mu_func);
+   ParGridFunction mu0_gf(&mu_fes);
+   mu0_gf.ProjectCoefficient(mu_func);
 
    
    StressCoefficient stress_coef(dim, v_gf, lambda_func, mu_func);
@@ -674,8 +697,7 @@ int main(int argc, char *argv[])
    ParGridFunction mat_gf(&mat_fes);
    FunctionCoefficient mat_coeff(gamma_func);
    mat_gf.ProjectCoefficient(mat_coeff);
-   
-   
+     
    /*
    // Initialize stress tensor
    L2_FECollection sig_fec(order_e, pmesh->Dimension());
@@ -694,7 +716,8 @@ int main(int argc, char *argv[])
    Vector inc_stress(NE*irs.GetNPoints()*dim*dim); // vector for previous stress at values at quardrature points
    Vector cur_spin(NE*irs.GetNPoints()*dim*dim); // vector for current (temporal) spin rate at values at quardrature points
    Vector old_spin(NE*irs.GetNPoints()*dim*dim); // vector for previous spin rate at values at quardrature points
-   old_stress=0.0;
+   // old_stress=0.0;
+   old_stress=1.0;
    inc_stress=0.0;
    cur_spin=0.0;
    old_spin=0.0;
@@ -721,7 +744,7 @@ int main(int argc, char *argv[])
                                                 mat_gf, source, cfl,
                                                 visc, vorticity, p_assembly,
                                                 cg_tol, cg_max_iter, ftz_tol,
-                                                order_q, old_stress, inc_stress, cur_spin, old_spin);
+                                                order_q, old_stress, inc_stress, cur_spin, old_spin, lambda0_gf, mu0_gf);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
@@ -781,7 +804,8 @@ int main(int argc, char *argv[])
       pd->RegisterField("stress", &s_gf);
       pd->RegisterField("test", &test_gf);
       // pd->SetLevelsOfDetail(order);
-      pd->SetDataFormat(VTKFormat::BINARY);
+      // pd->SetDataFormat(VTKFormat::BINARY);
+      pd->SetDataFormat(VTKFormat::ASCII);
       pd->SetHighOrderOutput(true);
       pd->SetCycle(0);
       pd->SetTime(0.0);
@@ -853,7 +877,7 @@ int main(int argc, char *argv[])
          t = t_old;
          S = S_old;
          hydro.ResetQuadratureData();
-         if (mpi.Root()) { cout << "Repeating step " << ti << endl; }
+         // if (mpi.Root()) { cout << "Repeating step " << ti << endl; }
          if (steps < max_tsteps) { last_step = false; }
          ti--; continue;
       }
@@ -871,8 +895,8 @@ int main(int argc, char *argv[])
 
       // Adding stress increment to total stress and storing spin rate
 
-      inc_stress.Add(1.0, old_stress);
-      old_spin.Set(1.0, cur_spin);
+      // inc_stress.Add(1.0, old_stress);
+      // old_spin.Set(1.0, cur_spin);
 
       // Make sure that the mesh corresponds to the new solution state. This is
       // needed, because some time integrators use different S-type vectors
@@ -897,6 +921,9 @@ int main(int argc, char *argv[])
 
             cout << std::fixed;
             cout << "step " << std::setw(5) << ti
+                 << ",\th_min = " << std::setw(5) << std::setprecision(4) << old_stress[0]
+                 << ",\tp_wave = " << std::setw(5) << std::setprecision(4) << old_stress[1]
+                 << ",\tsmooth = " << std::setw(5) << std::setprecision(4) << old_stress[2]
                  << ",\tt = " << std::setw(5) << std::setprecision(4) << t
                  << ",\tdt = " << std::setw(5) << std::setprecision(6) << dt
                  << ",\t|e| = " << std::setprecision(10) << std::scientific
@@ -1077,7 +1104,8 @@ double rho0(const Vector &x)
    switch (problem)
    {
       case 0: return 1.0;
-      case 1: return 1.00;
+      case 1: return 1.0;
+      // case 1: return (3e10+2*3e10)/(1e5*1e5*1e-9);
       case 2: return (x(0) < 0.5) ? 1.0 : 0.1;
       case 3: return (dim == 2) ? (x(0) > 1.0 && x(1) > 1.5) ? 0.125 : 1.0
                         : x(0) > 1.0 && ((x(1) < 1.5 && x(2) < 1.5) ||
@@ -1166,9 +1194,11 @@ void v0(const Vector &x, Vector &v)
 
          if(x(0) == 8)
          {
+            // if(dim == 2){v(1)=-0.1;}
+            if(dim == 3){v(2)=-0.1;}
             // v = 0.0;
             // v(0)=-0.01;
-            v(1)=-0.01;
+            // v(1)=-0.1/86400/365.25; // 0.1 mm/yr
          } 
 
          break;

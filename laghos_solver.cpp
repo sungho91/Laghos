@@ -105,7 +105,8 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
                                                  const int cgiter,
                                                  double ftz,
                                                  const int oq,
-                                                 Vector &_old_stress, Vector &_inc_stress, Vector &_cur_spin, Vector &_old_spin) : // -0-
+                                                 Vector &_old_stress, Vector &_inc_stress, Vector &_cur_spin, Vector &_old_spin,
+                                                 ParGridFunction &lambda_gf, ParGridFunction &mu_gf) : // -0-
    TimeDependentOperator(size),
    H1(h1), L2(l2), L2_2(l2_2), H1c(H1.GetParMesh(), H1.FEColl(), 1),
    pmesh(H1.GetParMesh()),
@@ -130,6 +131,8 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    p_assembly(p_assembly),
    cg_rel_tol(cgt), cg_max_iter(cgiter),ftz_tol(ftz),
    gamma_gf(gamma_gf),
+   lambda_gf(lambda_gf),
+   mu_gf(mu_gf),
    old_stress(_old_stress), 
    inc_stress(_inc_stress),
    cur_spin(_cur_spin),
@@ -231,6 +234,7 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
          inv.GetInverseMatrix(Me_inv(e));
       }
       // Standard assembly for the velocity mass matrix.
+      // std::cout<< "Standard assembly for the velocity mass matrix. " <<std::endl;
       VectorMassIntegrator *vmi = new VectorMassIntegrator(rho0_coeff, &ir);
       Mv.AddDomainIntegrator(vmi);
       Mv.Assemble();
@@ -546,6 +550,7 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
    }
 
    // #if 
+   /*
    VectorArrayCoefficient f_load(dim);
    for (int i = 0; i < dim-1; i++)
    {
@@ -563,6 +568,7 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
    v_source = new LinearForm(&H1);
    v_source->AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(f_load));
    v_source->Assemble();
+   */
 
    if (p_assembly)
    {
@@ -733,61 +739,166 @@ void LagrangianHydroOperator::SolveStress(const Vector &S,
    int NED = NE*l2_2dofs_cnt;
    int dim2 = dim*dim;
 
-   Vector sub_rhs1(l2_2dofs_cnt), sub_rhs2(l2_2dofs_cnt), sub_rhs3(l2_2dofs_cnt), sub_rhs4(l2_2dofs_cnt);
-   Vector loc_dsig1(l2_2dofs_cnt), loc_dsig2(l2_2dofs_cnt), loc_dsig3(l2_2dofs_cnt), loc_dsig4(l2_2dofs_cnt);
-   loc_dsig1=0.0; loc_dsig2=0.0; loc_dsig3=0.0; loc_dsig4=0.0;
-   Array<int> offset(5); 
-   offset[0] = 0;
-   offset[1] = offset[0] + l2_2dofs_cnt;
-   offset[2] = offset[1] + l2_2dofs_cnt;
-   offset[3] = offset[2] + l2_2dofs_cnt;
-   offset[4] = offset[3] + l2_2dofs_cnt;
-
-   BlockVector loc_rhs(offset, Device::GetMemoryType());
-
-   sub_rhs1.MakeRef(loc_rhs, 0);
-   sub_rhs2.MakeRef(loc_rhs, l2_2dofs_cnt);
-   sub_rhs3.MakeRef(loc_rhs, 2*l2_2dofs_cnt);
-   sub_rhs4.MakeRef(loc_rhs, 3*l2_2dofs_cnt);
-   loc_rhs = 0.0;
-  
-   SigmaIntegrator gi(qdata);
-   gi.SetIntRule(&ir);
-   Array<int> dof_loc1(l2_2dofs_cnt);
-   Array<int> dof_loc2(l2_2dofs_cnt);
-   Array<int> dof_loc3(l2_2dofs_cnt);
-   Array<int> dof_loc4(l2_2dofs_cnt);
-   
-   for (int e = 0; e < NE; e++)
+   if(dim == 2)
    {
+      Vector sub_rhs1(l2_2dofs_cnt), sub_rhs2(l2_2dofs_cnt), sub_rhs3(l2_2dofs_cnt), sub_rhs4(l2_2dofs_cnt);
+      Vector loc_dsig1(l2_2dofs_cnt), loc_dsig2(l2_2dofs_cnt), loc_dsig3(l2_2dofs_cnt), loc_dsig4(l2_2dofs_cnt);
+      loc_dsig1=0.0; loc_dsig2=0.0; loc_dsig3=0.0; loc_dsig4=0.0;
+      Array<int> offset(5); 
+      offset[0] = 0;
+      offset[1] = offset[0] + l2_2dofs_cnt;
+      offset[2] = offset[1] + l2_2dofs_cnt;
+      offset[3] = offset[2] + l2_2dofs_cnt;
+      offset[4] = offset[3] + l2_2dofs_cnt;
 
-      L2_2.GetElementDofs(e, dof_loc1);
-      L2_2.GetElementDofs(e, dof_loc2);
-      L2_2.GetElementDofs(e, dof_loc3);
-      L2_2.GetElementDofs(e, dof_loc4);
-      
-      const FiniteElement &fe = *L2_2.GetFE(e);
-      ElementTransformation &eltr = *L2_2.GetElementTransformation(e);
-      gi.AssembleRHSElementVect(fe, eltr, loc_rhs);
+      BlockVector loc_rhs(offset, Device::GetMemoryType());
 
-      Me_inv(e).Mult(sub_rhs1, loc_dsig1);
-      Me_inv(e).Mult(sub_rhs2, loc_dsig2);
-      Me_inv(e).Mult(sub_rhs3, loc_dsig3);
-      Me_inv(e).Mult(sub_rhs4, loc_dsig4);
-
-      for (int i = 0; i < dof_loc1.Size(); i++)
+      sub_rhs1.MakeRef(loc_rhs, 0*l2_2dofs_cnt);
+      sub_rhs2.MakeRef(loc_rhs, 1*l2_2dofs_cnt);
+      sub_rhs3.MakeRef(loc_rhs, 2*l2_2dofs_cnt);
+      sub_rhs4.MakeRef(loc_rhs, 3*l2_2dofs_cnt);
+      loc_rhs = 0.0;
+  
+      SigmaIntegrator gi(qdata);
+      gi.SetIntRule(&ir);
+      Array<int> dof_loc1(l2_2dofs_cnt);
+      Array<int> dof_loc2(l2_2dofs_cnt);
+      Array<int> dof_loc3(l2_2dofs_cnt);
+      Array<int> dof_loc4(l2_2dofs_cnt);
+   
+      for (int e = 0; e < NE; e++)
       {
-         dof_loc1[i] = i + (e+0*NE)*dof_loc1.Size(); 
-         dof_loc2[i] = i + (e+1*NE)*dof_loc1.Size();
-         dof_loc3[i] = i + (e+2*NE)*dof_loc1.Size(); 
-         dof_loc4[i] = i + (e+3*NE)*dof_loc1.Size(); 
+
+         L2_2.GetElementDofs(e, dof_loc1);
+         L2_2.GetElementDofs(e, dof_loc2);
+         L2_2.GetElementDofs(e, dof_loc3);
+         L2_2.GetElementDofs(e, dof_loc4);
+      
+         const FiniteElement &fe = *L2_2.GetFE(e);
+         ElementTransformation &eltr = *L2_2.GetElementTransformation(e);
+         gi.AssembleRHSElementVect(fe, eltr, loc_rhs);
+
+         Me_inv(e).Mult(sub_rhs1, loc_dsig1);
+         Me_inv(e).Mult(sub_rhs2, loc_dsig2);
+         Me_inv(e).Mult(sub_rhs3, loc_dsig3);
+         Me_inv(e).Mult(sub_rhs4, loc_dsig4);
+
+         for (int i = 0; i < dof_loc1.Size(); i++)
+         {
+            dof_loc1[i] = i + (e+0*NE)*dof_loc1.Size(); 
+            dof_loc2[i] = i + (e+1*NE)*dof_loc1.Size();
+            dof_loc3[i] = i + (e+2*NE)*dof_loc1.Size(); 
+            dof_loc4[i] = i + (e+3*NE)*dof_loc1.Size(); 
+         }
+
+         dsig.SetSubVector(dof_loc1, loc_dsig1);
+         dsig.SetSubVector(dof_loc2, loc_dsig2);
+         dsig.SetSubVector(dof_loc3, loc_dsig3);
+         dsig.SetSubVector(dof_loc4, loc_dsig4);
+
       }
+   }
+   else if(dim == 3)
+   {
+      // std::cout << "SolveStress in 3D " <<std::endl;
+      Vector sub_rhs1(l2_2dofs_cnt), sub_rhs2(l2_2dofs_cnt), sub_rhs3(l2_2dofs_cnt);
+      Vector sub_rhs4(l2_2dofs_cnt), sub_rhs5(l2_2dofs_cnt), sub_rhs6(l2_2dofs_cnt);
+      Vector sub_rhs7(l2_2dofs_cnt), sub_rhs8(l2_2dofs_cnt), sub_rhs9(l2_2dofs_cnt);
 
-      dsig.SetSubVector(dof_loc1, loc_dsig1);
-      dsig.SetSubVector(dof_loc2, loc_dsig2);
-      dsig.SetSubVector(dof_loc3, loc_dsig3);
-      dsig.SetSubVector(dof_loc4, loc_dsig4);
+      Vector loc_dsig1(l2_2dofs_cnt), loc_dsig2(l2_2dofs_cnt), loc_dsig3(l2_2dofs_cnt);
+      Vector loc_dsig4(l2_2dofs_cnt), loc_dsig5(l2_2dofs_cnt), loc_dsig6(l2_2dofs_cnt);
+      Vector loc_dsig7(l2_2dofs_cnt), loc_dsig8(l2_2dofs_cnt), loc_dsig9(l2_2dofs_cnt);
 
+      loc_dsig1=0.0; loc_dsig2=0.0; loc_dsig3=0.0; loc_dsig4=0.0; loc_dsig5=0.0; loc_dsig6=0.0; loc_dsig7=0.0; loc_dsig8=0.0; loc_dsig9=0.0;
+      Array<int> offset(10); 
+      offset[0] = 0;
+      offset[1] = offset[0] + l2_2dofs_cnt;
+      offset[2] = offset[1] + l2_2dofs_cnt;
+      offset[3] = offset[2] + l2_2dofs_cnt;
+      offset[4] = offset[3] + l2_2dofs_cnt;
+      offset[5] = offset[4] + l2_2dofs_cnt;
+      offset[6] = offset[5] + l2_2dofs_cnt;
+      offset[7] = offset[6] + l2_2dofs_cnt;
+      offset[8] = offset[7] + l2_2dofs_cnt;
+      offset[9] = offset[8] + l2_2dofs_cnt;
+
+      BlockVector loc_rhs(offset, Device::GetMemoryType());
+
+      sub_rhs1.MakeRef(loc_rhs, 0*l2_2dofs_cnt);
+      sub_rhs2.MakeRef(loc_rhs, 1*l2_2dofs_cnt);
+      sub_rhs3.MakeRef(loc_rhs, 2*l2_2dofs_cnt);
+      sub_rhs4.MakeRef(loc_rhs, 3*l2_2dofs_cnt);
+      sub_rhs5.MakeRef(loc_rhs, 4*l2_2dofs_cnt);
+      sub_rhs6.MakeRef(loc_rhs, 5*l2_2dofs_cnt);
+      sub_rhs7.MakeRef(loc_rhs, 6*l2_2dofs_cnt);
+      sub_rhs8.MakeRef(loc_rhs, 7*l2_2dofs_cnt);
+      sub_rhs9.MakeRef(loc_rhs, 8*l2_2dofs_cnt);
+
+      loc_rhs = 0.0;
+  
+      SigmaIntegrator gi(qdata);
+      gi.SetIntRule(&ir);
+      Array<int> dof_loc1(l2_2dofs_cnt);
+      Array<int> dof_loc2(l2_2dofs_cnt);
+      Array<int> dof_loc3(l2_2dofs_cnt);
+      Array<int> dof_loc4(l2_2dofs_cnt);
+      Array<int> dof_loc5(l2_2dofs_cnt);
+      Array<int> dof_loc6(l2_2dofs_cnt);
+      Array<int> dof_loc7(l2_2dofs_cnt);
+      Array<int> dof_loc8(l2_2dofs_cnt);
+      Array<int> dof_loc9(l2_2dofs_cnt);
+   
+      for (int e = 0; e < NE; e++)
+      {
+
+         L2_2.GetElementDofs(e, dof_loc1);
+         L2_2.GetElementDofs(e, dof_loc2);
+         L2_2.GetElementDofs(e, dof_loc3);
+         L2_2.GetElementDofs(e, dof_loc4);
+         L2_2.GetElementDofs(e, dof_loc5);
+         L2_2.GetElementDofs(e, dof_loc6);
+         L2_2.GetElementDofs(e, dof_loc7);
+         L2_2.GetElementDofs(e, dof_loc8);
+         L2_2.GetElementDofs(e, dof_loc9);
+      
+         const FiniteElement &fe = *L2_2.GetFE(e);
+         ElementTransformation &eltr = *L2_2.GetElementTransformation(e);
+         gi.AssembleRHSElementVect(fe, eltr, loc_rhs);
+
+         Me_inv(e).Mult(sub_rhs1, loc_dsig1);
+         Me_inv(e).Mult(sub_rhs2, loc_dsig2);
+         Me_inv(e).Mult(sub_rhs3, loc_dsig3);
+         Me_inv(e).Mult(sub_rhs4, loc_dsig4);
+         Me_inv(e).Mult(sub_rhs5, loc_dsig5);
+         Me_inv(e).Mult(sub_rhs6, loc_dsig6);
+         Me_inv(e).Mult(sub_rhs7, loc_dsig7);
+         Me_inv(e).Mult(sub_rhs8, loc_dsig8);
+         Me_inv(e).Mult(sub_rhs9, loc_dsig9);
+
+         for (int i = 0; i < dof_loc1.Size(); i++)
+         {
+            dof_loc1[i] = i + (e+0*NE)*dof_loc1.Size(); 
+            dof_loc2[i] = i + (e+1*NE)*dof_loc1.Size();
+            dof_loc3[i] = i + (e+2*NE)*dof_loc1.Size(); 
+            dof_loc4[i] = i + (e+3*NE)*dof_loc1.Size(); 
+            dof_loc5[i] = i + (e+4*NE)*dof_loc1.Size(); 
+            dof_loc6[i] = i + (e+5*NE)*dof_loc1.Size(); 
+            dof_loc7[i] = i + (e+6*NE)*dof_loc1.Size(); 
+            dof_loc8[i] = i + (e+7*NE)*dof_loc1.Size(); 
+            dof_loc9[i] = i + (e+8*NE)*dof_loc1.Size(); 
+         }
+
+         dsig.SetSubVector(dof_loc1, loc_dsig1);
+         dsig.SetSubVector(dof_loc2, loc_dsig2);
+         dsig.SetSubVector(dof_loc3, loc_dsig3);
+         dsig.SetSubVector(dof_loc4, loc_dsig4);
+         dsig.SetSubVector(dof_loc5, loc_dsig5);
+         dsig.SetSubVector(dof_loc6, loc_dsig6);
+         dsig.SetSubVector(dof_loc7, loc_dsig7);
+         dsig.SetSubVector(dof_loc8, loc_dsig8);
+         dsig.SetSubVector(dof_loc9, loc_dsig9);
+
+      }
    }
 }
 
@@ -808,11 +919,11 @@ void LagrangianHydroOperator::Getdamping(const Vector &S, Vector &_v_damping) co
    {  
       if(v[i] >= 0)
       {
-         _v_damping[i] = 0.05*fabs(_v_damping[i]);
+         _v_damping[i] = 0.00*fabs(_v_damping[i]);
       }
       else
       {
-         _v_damping[i] = -0.05*fabs(_v_damping[i]);
+         _v_damping[i] = -0.00*fabs(_v_damping[i]);
       }
 
    }
@@ -1127,6 +1238,9 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
    *e_b   = new double[nqp_batch],
    *p_b   = new double[nqp_batch],
    *cs_b  = new double[nqp_batch];
+   double *lambda_b = new double[nqp_batch], 
+   *mu_b = new double[nqp_batch],
+   *pmod_b = new double[nqp_batch];
    // Jacobians of reference->physical transformations for all quadrature points
    // in the batch.
    DenseTensor *Jpr_b = new DenseTensor[nzones_batch];
@@ -1164,7 +1278,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
       }
 
       // Batched computation of material properties.
-      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b);
+      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b, pmod_b);
 
       z_id -= nzones_batch;
       for (int z = 0; z < nzones_batch; z++)
@@ -1266,6 +1380,9 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
    delete [] p_b;
    delete [] cs_b;
    delete [] Jpr_b;
+   delete [] lambda_b;
+   delete [] mu_b;
+   delete [] pmod_b;
    timer.sw_qdata.Stop();
    timer.quad_tstep += NE;
 }
@@ -1292,6 +1409,8 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
    Vector e_vals;
    Vector sxx, syy, szz;
    Vector sxy, sxz, syz;
+
+   Vector dummy;
    DenseMatrix Jpi(dim), sgrad_v(dim), Jinv(dim), stress(dim), stressJiT(dim);
    DenseMatrix spin(dim), srate(dim);
    DenseMatrix tau0(dim), tau1(dim);
@@ -1300,6 +1419,12 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
 
    double lame1{1.0};
    double lame2{1.0};
+   double max_vel{1.0};
+   double mscale{1.0e5};
+   max_vel = std::max(fabs(v.Min()), v.Max());
+   const double pseudo_speed = max_vel * mscale;
+
+   // std::cout << v.Size() << " , "<< "vmax "<< v.Max() << ", vmin " << v.Min() << ", speed " << pseudo_speed << std::endl;
 
    // Batched computations are needed, because hydrodynamic codes usually
    // involve expensive computations of material properties. Although this
@@ -1313,8 +1438,12 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
    *e_b   = new double[nqp_batch],
    *p_b   = new double[nqp_batch],
    *cs_b  = new double[nqp_batch];
+   double *lambda_b = new double[nqp_batch], 
+   *mu_b = new double[nqp_batch],
+   *pmod_b = new double[nqp_batch];
    // Jacobians of reference->physical transformations for all quadrature points
    // in the batch.
+   // std::cout << "NE "<< NE << " Number of quard points " << nqp << " n batches " << nbatches <<" Batched elemetns size : " << nqp_batch << std::endl;
    DenseTensor *Jpr_b = new DenseTensor[nzones_batch];
    for (int b = 0; b < nbatches; b++)
    {
@@ -1347,12 +1476,14 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
             gamma_b[idx] = gamma_gf(z_id);
             rho_b[idx] = qdata.rho0DetJ0w(z_id*nqp + q) / detJ / ip.weight;
             e_b[idx] = fmax(0.0, e_vals(q));
+            lambda_b[idx] = lambda_gf(z_id);
+            mu_b[idx] = mu_gf(z_id);
+            pmod_b[idx] = lambda_b[idx] + 2*mu_b[idx];
          }
          ++z_id;
       }
-
       // Batched computation of material properties.
-      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b);
+      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b, pmod_b);
 
       z_id -= nzones_batch;
       for (int z = 0; z < nzones_batch; z++)
@@ -1372,10 +1503,16 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
             CalcInverse(Jpr, Jinv);
             const double detJ = Jpr.Det(), rho = rho_b[z*nqp + q],
                          p = p_b[z*nqp + q], sound_speed = cs_b[z*nqp + q];
-            stress = 0.0; tau0 = 0.0; tau1 = 0.0; old_sig = 0.0;
             
-            // for (int d = 0; d < dim; d++) { stress(d, d) = 0; }
-            for (int d = 0; d < dim; d++) { stress(d, d) = -p; }
+            // const double detJ = Jpr.Det(), rho = rho_b[z*nqp + q],
+            //              p = p_b[z*nqp + q], sound_speed = cs_b[z*nqp + q];
+
+            lame1 = lambda_b[z*nqp + q];
+            lame2 = mu_b[z*nqp + q];
+            stress = 0.0; tau0 = 0.0; tau1 = 0.0; old_sig = 0.0;
+
+            for (int d = 0; d < dim; d++) { stress(d, d) = 0; }
+            // for (int d = 0; d < dim; d++) { stress(d, d) = -p; }
             for (int d = 0; d < dim; d++) { tau1(d, d) = 1.0;} // Identity matrix
 
             double visc_coeff = 0.0;
@@ -1390,11 +1527,29 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                v.GetVectorGradient(*T, sgrad_v);
 
                // Get deviatoric stress components at quadrature points
-               sig.GetValues(z_id, ir, sxx, 1);
-               sig.GetValues(z_id, ir, sxy, 2);
-               sig.GetValues(z_id, ir, syy, 4);
-               old_sig(0,0) = sxx(q) ; old_sig(0,1) = sxy(q); old_sig(1,0) = sxy(q); old_sig(1,1) = syy(q);
+               if(dim == 2)
+               {
+                  sig.GetValues(z_id, ir, sxx, 1);
+                  sig.GetValues(z_id, ir, sxy, 2);
+                  sig.GetValues(z_id, ir, syy, 4);
+                  old_sig(0,0) = sxx(q) ; old_sig(0,1) = sxy(q); old_sig(1,0) = sxy(q); old_sig(1,1) = syy(q);
+               }
+               else if(dim == 3)
+               {
 
+                  sig.GetValues(z_id, ir, sxx, 1);
+                  sig.GetValues(z_id, ir, sxy, 2);
+                  sig.GetValues(z_id, ir, sxz, 3);
+                  sig.GetValues(z_id, ir, syy, 5);
+                  sig.GetValues(z_id, ir, syz, 6);
+                  sig.GetValues(z_id, ir, szz, 9);
+                  
+                  
+                  old_sig(0,0) = sxx(q) ; old_sig(0,1) = sxy(q); old_sig(0,2) = sxz(q); 
+                  old_sig(1,0) = sxy(q) ; old_sig(1,1) = syy(q); old_sig(1,2) = syz(q);
+                  old_sig(2,0) = sxz(q) ; old_sig(2,1) = syz(q); old_sig(2,2) = szz(q);
+               }
+               
                double vorticity_coeff = 1.0;
                if (use_vorticity)
                {
@@ -1454,7 +1609,6 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                // Juamman stress increment
                tau0.Add(1.0,  crot1); 
                tau0.Add(-1.0, crot2); 
-
                // #ifend
             }
             // Time step estimate at the point. Here the more relevant length
@@ -1463,8 +1617,14 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
             // time step estimate should be aware of the presence of shocks.
             const double h_min =
                Jpr.CalcSingularvalue(dim-1) / (double) H1.GetOrder(0);
+
             const double inv_dt = sound_speed / h_min +
                                   2.5 * visc_coeff / rho / h_min / h_min;
+            const double smooth = 2.5 * visc_coeff / rho / h_min / h_min;
+
+            // std::cout << sound_speed << " / " << pseudo_speed << std::endl;
+            // std::cout << z_id << ", "<< q << ", hmin " << h_min << std::endl;
+         
             if (min_detJ < 0.0)
             {
                // This will force repetition of the step with smaller dt.
@@ -1475,6 +1635,9 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                if (inv_dt>0.0)
                {
                   qdata.dt_est = fmin(qdata.dt_est, cfl*(1.0/inv_dt));
+                  old_stress[0] = fmin(old_stress[0], h_min); // check h_min size
+                  old_stress[1] = fmax(old_stress[1], sound_speed); // check h_min size
+                  old_stress[2] = fmax(old_stress[2], smooth); // check h_min size
                }
             }
             // Quadrature data for partial assembly of the force operator.
@@ -1491,6 +1654,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                   qdata.stressJinvT(vd)(z_id*nqp + q, gd) =
                      stressJiT(vd, gd);
                   qdata.tauJinvT(vd)(z_id*nqp + q, gd) = tau0(vd, gd);
+                  // if(vd == 0){std::cout<< vd << "," << gd << "," << tau0(vd, gd)  << std::endl;}
                   // old_stress[offset] = tau0(vd, gd);
                }
             }
@@ -1504,6 +1668,9 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
    delete [] p_b;
    delete [] cs_b;
    delete [] Jpr_b;
+   delete [] lambda_b;
+   delete [] mu_b;
+   delete [] pmod_b;
    timer.sw_qdata.Stop();
    timer.quad_tstep += NE;
 }

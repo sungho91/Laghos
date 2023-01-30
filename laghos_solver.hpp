@@ -153,6 +153,8 @@ protected:
    const int cg_max_iter;
    const double ftz_tol;
    const ParGridFunction &gamma_gf;
+   const ParGridFunction &lambda_gf;
+   const ParGridFunction &mu_gf;
    // ParGridFunction &sigma_gf; // new member of stress tensor
    Vector &old_stress;
    Vector &inc_stress;
@@ -194,13 +196,14 @@ protected:
 
    virtual void ComputeMaterialProperties(int nvalues, const double gamma[],
                                           const double rho[], const double e[],
-                                          double p[], double cs[]) const
+                                          double p[], double cs[], double pmod[]) const
    {
       for (int v = 0; v < nvalues; v++)
       {
          p[v]  = rho[v] * e[v];
+         cs[v] = sqrt(pmod[v]/rho[v]);
          // p[v]  = (gamma[v] - 1.0) * rho[v] * e[v];
-         cs[v] = sqrt(gamma[v] * (gamma[v]-1.0) * e[v]);
+         // cs[v] = sqrt(gamma[v] * (gamma[v]-1.0) * e[v]);
       }
    }
 
@@ -222,7 +225,8 @@ public:
                            const double cfl,
                            const bool visc, const bool vort, const bool pa,
                            const double cgt, const int cgiter, double ftz_tol,
-                           const int order_q, Vector &old_stress, Vector &inc_stress, Vector &cur_spin, Vector &old_spin);
+                           const int order_q, Vector &old_stress, Vector &inc_stress, Vector &cur_spin, Vector &old_spin,
+                           ParGridFunction &lambda_gf, ParGridFunction &mu_gf);
    ~LagrangianHydroOperator();
 
    // Solve for dx_dt, dv_dt and de_dt.

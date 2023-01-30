@@ -55,27 +55,66 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
    Vector shape(fe.GetDof());
    elvect.SetSize(fe.GetDof()*dim2);
    elvect = 0.0;
-   double sxx{0.0}, sxy{0.0}, syx{0.0}, syy{0.0};
+   double sxx{0.0}, sxy{0.0}, sxz{0.0};
+   double syx{0.0}, syy{0.0}, syz{0.0};
+   double szx{0.0}, szy{0.0}, szz{0.0};
 
-   for (int q = 0; q < nqp; q++)
+   if(dim == 2)
    {
-      
-      fe.CalcShape(IntRule->IntPoint(q), shape);
-      const int eq = e*nqp + q; // quardature point
-      sxx = qdata.tauJinvT(0)(eq, 0);
-      sxy = qdata.tauJinvT(0)(eq, 1);
-      syx = qdata.tauJinvT(1)(eq, 0);
-      syy = qdata.tauJinvT(1)(eq, 1);
-
-      for (int i = 0; i < num; i++)
+      for (int q = 0; q < nqp; q++)
       {
-         elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
-         elvect[i+num*1] = elvect[i+num*1] + shape[i]*sxy;
-         elvect[i+num*2] = elvect[i+num*2] + shape[i]*sxy;
-         elvect[i+num*3] = elvect[i+num*3] + shape[i]*syy;
+      
+         fe.CalcShape(IntRule->IntPoint(q), shape);
+         const int eq = e*nqp + q; // quardature point
+         sxx = qdata.tauJinvT(0)(eq, 0);
+         sxy = qdata.tauJinvT(0)(eq, 1);
+         syx = qdata.tauJinvT(1)(eq, 0);
+         syy = qdata.tauJinvT(1)(eq, 1);
 
+         for (int i = 0; i < num; i++)
+         {
+           elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
+           elvect[i+num*1] = elvect[i+num*1] + shape[i]*sxy;
+           elvect[i+num*2] = elvect[i+num*2] + shape[i]*sxy;
+           elvect[i+num*3] = elvect[i+num*3] + shape[i]*syy;
+         }
       }
    }
+
+   else if(dim == 3)
+   {
+      // std::cout << "SolveStress assembly in 3D " <<std::endl;
+      for (int q = 0; q < nqp; q++)
+      {
+      
+         fe.CalcShape(IntRule->IntPoint(q), shape);
+         const int eq = e*nqp + q; // quardature point
+         sxx = qdata.tauJinvT(0)(eq, 0);
+         sxy = qdata.tauJinvT(0)(eq, 1);
+         sxz = qdata.tauJinvT(0)(eq, 2);
+         syx = qdata.tauJinvT(1)(eq, 0);
+         syy = qdata.tauJinvT(1)(eq, 1);
+         syz = qdata.tauJinvT(1)(eq, 2);
+         szx = qdata.tauJinvT(2)(eq, 0);
+         szy = qdata.tauJinvT(2)(eq, 1);
+         szz = qdata.tauJinvT(2)(eq, 2);
+
+         
+         for (int i = 0; i < num; i++)
+         {
+           elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
+           elvect[i+num*1] = elvect[i+num*1] + shape[i]*sxy;
+           elvect[i+num*2] = elvect[i+num*2] + shape[i]*sxz;
+           elvect[i+num*3] = elvect[i+num*3] + shape[i]*sxy;
+           elvect[i+num*4] = elvect[i+num*4] + shape[i]*syy;
+           elvect[i+num*5] = elvect[i+num*5] + shape[i]*syz;
+           elvect[i+num*6] = elvect[i+num*6] + shape[i]*sxz;
+           elvect[i+num*7] = elvect[i+num*7] + shape[i]*syz;
+           elvect[i+num*8] = elvect[i+num*8] + shape[i]*szz;
+         }
+      }
+   }
+
    /*
    for (int q = 0; q < nqp; q++)
    {
