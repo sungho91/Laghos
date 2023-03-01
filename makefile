@@ -106,10 +106,10 @@ OBJECT_FILES = $(SOURCE_FILES:.cpp=.o)
 
 .SUFFIXES: .cpp .o
 .cpp.o:
-	cd $(<D); $(CCC) -c $(<F)
+	cd $(<D); $(CCC) -c -ggdb -O0 $(<F)
 
 laghos: $(OBJECT_FILES) $(CONFIG_MK) $(MFEM_LIB_FILE)
-	$(MFEM_CXX) $(MFEM_LINK_FLAGS) -o laghos $(OBJECT_FILES) $(LIBS)
+	$(MFEM_CXX) $(MFEM_LINK_FLAGS) -ggdb -O0  -o laghos $(OBJECT_FILES) $(LIBS)
 
 all:;@$(MAKE) -j $(NPROC) laghos
 

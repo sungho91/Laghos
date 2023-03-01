@@ -58,6 +58,8 @@
 // -m data/cube_922_hex.mesh -pt 911 for  9 / 72 / 576 / 4608 ... tasks.
 // -m data/cube_522_hex.mesh -pt 521 for 10 / 80 / 640 / 5120 ... tasks.
 // -m data/cube_12_hex.mesh  -pt 322 for 12 / 96 / 768 / 6144 ... tasks.
+// mpirun -np 8 laghos -p 1 -fa -dim 2 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh2d.mesh 2D beam (80 * 10 km2)
+// mpirun -np 8 laghos -p 1 -fa -dim 2 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh3d.mesh 3D beam (80 * 10 * 10 km3)
 
 #include <fstream>
 #include <sys/time.h>
@@ -148,7 +150,7 @@ int main(int argc, char *argv[])
    int ode_solver_type = 7;
    double t_final = 1.0;
    double cfl = 0.5;
-   double cg_tol = 1e-8;
+   double cg_tol = 1e-10;
    double ftz_tol = 0.0;
    int cg_max_iter = 300;
    int max_tsteps = -1;
@@ -167,14 +169,16 @@ int main(int argc, char *argv[])
    bool fom = false;
    bool gpu_aware_mpi = false;
    int dev = 0;
-   double blast_energy = 0.0;
    bool year = false;
+   // bool year = true;
    double init_dt = 1.0;
+   // double mscale  = 1.0;
+   double mscale  = 1.0e6;
+   double gravity = 10.0; // magnitude 
    // double init_dt = 1e-1;
-   // double blast_energy = 1.0e-1;
+   double blast_energy = 0.0;
    // double blast_energy = 1.0e-6;
-   // double blast_position[] = {0.0, 0.5, 0.0};
-   double blast_position[] = {8.0, 0.5, 0.0};
+   double blast_position[] = {0.0, 0.5, 0.0};
    // double blast_energy2 = 0.1;
    // double blast_position2[] = {8.0, 0.5};
 
@@ -257,18 +261,25 @@ int main(int argc, char *argv[])
    }
    if (mpi.Root()) { args.PrintOptions(cout); }
 
-   if (mpi.Root()) 
-   {
+   
+   
    if(year)
    {
       t_final = t_final * 86400 * 365.25;
-      std::cout << "Use years in output instead of seconds is true" << std::endl;
+      
+      if (mpi.Root())
+      {
+         std::cout << "Use years in output instead of seconds is true" << std::endl;
+      }
    }
    else
    {
       // init_dt = 1e-1;
-      std::cout << "Use secondss in output instead of years is true" << std::endl;
-   }
+      if (mpi.Root())
+      {
+         std::cout << "Use seconds in output instead of years is true" << std::endl;
+      }
+      
    }
 
    // Configure the device from the command line options
@@ -280,9 +291,12 @@ int main(int argc, char *argv[])
    // On all processors, use the default builtin 1D/2D/3D mesh or read the
    // serial one given on the command line.
    Mesh *mesh;
+
    if (strncmp(mesh_file, "default", 7) != 0)
    {
+      // cout << "Reading mesh" << endl;
       mesh = new Mesh(mesh_file, true, true);
+      // cout << "Done reading mesh" << endl;
    }
    else
    {
@@ -301,6 +315,7 @@ int main(int argc, char *argv[])
          {
             Element *bel = mesh->GetBdrElement(b);
             const int attr = (b < NBE/2) ? 2 : 1;
+            std::cout<< NBE <<"," << b << "," << attr <<std::endl;
             bel->SetAttribute(attr);
          }
       }
@@ -491,29 +506,105 @@ int main(int argc, char *argv[])
    {
       Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
       /*Free slip for all sides*/
+      // for (int d = 0; d < pmesh->Dimension(); d++)
+      // {
+      //    // Attributes 1/2/3 correspond to fixed-x/y/z boundaries,
+      //    // i.e., we must enforce v_x/y/z = 0 for the velocity components.
+      //    ess_bdr = 0; ess_bdr[d] = 1;
+      //    H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, d);
+      //    ess_tdofs.Append(dofs_list);
+      //    H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, d);
+      //    FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      //    ess_vdofs.Append(dofs_list);
+      // }
+
+      // oedometer2d
       /*
-      for (int d = 0; d < pmesh->Dimension(); d++)
-      {
-         // Attributes 1/2/3 correspond to fixed-x/y/z boundaries,
-         // i.e., we must enforce v_x/y/z = 0 for the velocity components.
-         ess_bdr = 0; ess_bdr[d] = 1;
-         H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, d);
-         ess_tdofs.Append(dofs_list);
-         H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, d);
-         FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-         ess_vdofs.Append(dofs_list);
-      }
-      */
-     
-      /*Boundary condition for elastic beam*/
       ess_bdr = 0; ess_bdr[0] = 1;
-      ess_bdr[1] = 1;
-      // if(dim == 3){ess_bdr[1] = 1;}
+      // -x boundary and v_x = 0, v_y is free
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+
+      ess_bdr = 0; ess_bdr[1] = 1;
+      // +x boundary and v_x = v0 and v_y = 0
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
+
+      ess_bdr = 0; ess_bdr[2] = 1;
+      // -y / +y boundary and v_x is free and v_y = 0
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+      */
+      
+      // oedometer2d
+      /*
+      ess_bdr = 0; ess_bdr[0] = 1;
+      // -x boundary and v_x = 0, v_y, v_z is free
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+
+      ess_bdr = 0; ess_bdr[1] = 1;
+      // +x boundary and v_x = v0 and v_y = 0
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+
+      ess_bdr = 0; ess_bdr[2] = 1;
+      // -y / +y boundary and v_x and v_z are free and v_y = 0
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+
+      ess_bdr = 0; ess_bdr[3] = 1;
+      // -z / +z boundary and v_x and v_y are free and v_z = 0
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 2);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 2);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+      */
+
+      // Boundary condition for elastic beam and thin plate
+      ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+
+      // ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
+      // // -x boundary and v_x = 0, v_y, v_z is free
+      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
+      // ess_tdofs.Append(dofs_list);
+      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
+      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      // ess_vdofs.Append(dofs_list);
+      
+      /*
+      // constrain on sides
+      ess_bdr = 0; ess_bdr[2] = 1;
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+      */
    }
 
    // Define the explicit ODE solver used for time integration.
@@ -581,11 +672,6 @@ int main(int argc, char *argv[])
    // Initialize the velocity.
    VectorFunctionCoefficient v_coeff(pmesh->Dimension(), v0);
    v_gf.ProjectCoefficient(v_coeff);
-   for (int i = 0; i < ess_vdofs.Size(); i++)
-   {
-      // v_gf(ess_vdofs[i]) = 0.0;
-      // std::cout<<i << " "<<ess_vdofs[i] <<" "<< x_gf(ess_vdofs[i])<<std::endl;
-   }
 
    // For the Sedov test, we use a delta function at the origin.
    // Vector dir(pmesh->Dimension());
@@ -612,14 +698,31 @@ int main(int argc, char *argv[])
    // is to get a high-order representation of the initial condition. Note that
    // this density is a temporary function and it will not be updated during the
    // time evolution.
+   Vector z_rho(pmesh->attributes.Max());
+   z_rho = 2800;
+   Vector s_rho(pmesh->attributes.Max());
+   s_rho = 2800*mscale;
+
    ParGridFunction rho0_gf(&L2FESpace);
-   FunctionCoefficient rho0_coeff(rho0);
+   PWConstCoefficient rho0_coeff(z_rho);
+   PWConstCoefficient scale_rho0_coeff(s_rho);
    L2_FECollection l2_fec(order_e, pmesh->Dimension());
    ParFiniteElementSpace l2_fes(pmesh, &l2_fec);
    ParGridFunction l2_rho0_gf(&l2_fes), l2_e(&l2_fes);
    l2_rho0_gf.ProjectCoefficient(rho0_coeff);
    rho0_gf.ProjectGridFunction(l2_rho0_gf);
 
+   /*
+   ParGridFunction rho0_gf(&L2FESpace);
+   FunctionCoefficient rho0_coeff(rho0);
+   // FunctionCoefficient super_rho0_coeff(rho0);
+   L2_FECollection l2_fec(order_e, pmesh->Dimension());
+   ParFiniteElementSpace l2_fes(pmesh, &l2_fec);
+   ParGridFunction l2_rho0_gf(&l2_fes), l2_e(&l2_fes);
+   l2_rho0_gf.ProjectCoefficient(rho0_coeff);
+   rho0_gf.ProjectGridFunction(l2_rho0_gf);
+   */
+   
    if (problem == 1)
    {
       // For the Sedov test, we use a delta function at the origin.
@@ -633,18 +736,17 @@ int main(int argc, char *argv[])
       l2_e.ProjectCoefficient(e_coeff);
    }
    e_gf.ProjectGridFunction(l2_e);
+   e_gf = 0;
    // Sync the data location of e_gf with its base, S
    e_gf.SyncAliasMemory(S);
 
    // Piecewise constant elastic stiffness over the Lagrangian mesh.
    // Lambda and Mu is Lame's first and second constants
    Vector lambda(pmesh->attributes.Max());
-   // lambda = 3.0e10;
-   lambda = 1.0;
+   lambda = 200e6;
    PWConstCoefficient lambda_func(lambda);
    Vector mu(pmesh->attributes.Max());
-   // mu = 3.0e10;
-   mu = 1.0;
+   mu = 200e6;
    PWConstCoefficient mu_func(mu);
    
    // Project PWConstCoefficient to grid function
@@ -689,7 +791,13 @@ int main(int argc, char *argv[])
    // Sync the data location of u_gf with its base, S2
    u_gf.SyncAliasMemory(S2);
    */
-   
+
+   ParGridFunction u_gf(&H1FESpace);  // Displacment
+   ParGridFunction x0_gf(&H1FESpace); // Initial mesh (reference configuration)
+   // Initialize x_gf using the starting mesh coordinates.
+   pmesh->SetNodalGridFunction(&x0_gf);
+   u_gf = 0.0; 
+
    // Piecewise constant ideal gas coefficient over the Lagrangian mesh. The
    // gamma values are projected on function that's constant on the moving mesh.
    L2_FECollection mat_fec(0, pmesh->Dimension());
@@ -740,11 +848,11 @@ int main(int argc, char *argv[])
 
    hydrodynamics::LagrangianHydroOperator hydro(S.Size(),
                                                 H1FESpace, L2FESpace, L2FESpace_2, ess_tdofs,
-                                                rho0_coeff, rho0_gf,
+                                                rho0_coeff, scale_rho0_coeff, rho0_gf,
                                                 mat_gf, source, cfl,
                                                 visc, vorticity, p_assembly,
                                                 cg_tol, cg_max_iter, ftz_tol,
-                                                order_q, old_stress, inc_stress, cur_spin, old_spin, lambda0_gf, mu0_gf);
+                                                order_q, old_stress, inc_stress, cur_spin, old_spin, lambda0_gf, mu0_gf, mscale, gravity);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
@@ -799,10 +907,10 @@ int main(int argc, char *argv[])
       pd = new ParaViewDataCollection(basename, pmesh);
       pd->SetPrefixPath("ParaView");
       pd->RegisterField("Density",  &rho_gf);
+      pd->RegisterField("Displacement", &u_gf);
       pd->RegisterField("Velocity", &v_gf);
       pd->RegisterField("Specific Internal Energy", &e_gf);
       pd->RegisterField("stress", &s_gf);
-      pd->RegisterField("test", &test_gf);
       // pd->SetLevelsOfDetail(order);
       // pd->SetDataFormat(VTKFormat::BINARY);
       pd->SetDataFormat(VTKFormat::ASCII);
@@ -819,7 +927,8 @@ int main(int argc, char *argv[])
    hydro.ResetTimeStepEstimate();
    double t = 0.0, dt = 0.0, t_old;
    dt = hydro.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
-   dt = init_dt;
+   
+   // dt = init_dt;
    bool last_step = false;
    int steps = 0;
    BlockVector S_old(S);
@@ -846,11 +955,18 @@ int main(int argc, char *argv[])
    //      }
    //      cout << endl;
    //   }
+
+   if (mpi.Root()) 
+   {
+      std::cout<<""<<std::endl;
+      std::cout<<"simulation starts"<<std::endl;
+      // std::cout << dt << std::endl;
+   }
+
    for (int ti = 1; !last_step; ti++)
    {
       if (t + dt >= t_final)
       {
-         // std::cout<< t << " "<<dt <<std::endl;
          dt = t_final - t;
          last_step = true;
       }
@@ -866,6 +982,7 @@ int main(int argc, char *argv[])
 
       // Adaptive time step control.
       const double dt_est = hydro.GetTimeStepEstimate(S, dt);
+      // const double dt_est = hydro.GetTimeStepEstimate(S, dt, mpi.Root());
       // const double dt_est = hydro.GetTimeStepEstimate(S);
       if (dt_est < dt)
       {
@@ -891,7 +1008,7 @@ int main(int argc, char *argv[])
       e_gf.SyncAliasMemory(S);
       s_gf.SyncAliasMemory(S);
 
-      test_gf.ProjectCoefficient(stress_coef);
+      test_gf.ProjectCoefficient(stress_coef); // this is stress to debug 
 
       // Adding stress increment to total stress and storing spin rate
 
@@ -902,6 +1019,11 @@ int main(int argc, char *argv[])
       // needed, because some time integrators use different S-type vectors
       // and the oper object might have redirected the mesh positions to those.
       pmesh->NewNodes(x_gf, false);
+      // u_gf.subtract(x_gf, x0_gf);
+      u_gf = x0_gf;
+      u_gf -= x_gf;
+      u_gf.Neg();
+      
 
       if (last_step || (ti % vis_steps) == 0)
       {
@@ -913,19 +1035,21 @@ int main(int argc, char *argv[])
             MPI_Reduce(&mem, &mmax, 1, MPI_LONG, MPI_MAX, 0, pmesh->GetComm());
             MPI_Reduce(&mem, &msum, 1, MPI_LONG, MPI_SUM, 0, pmesh->GetComm());
          }
-         // const double internal_energy = hydro.InternalEnergy(e_gf);
-         // const double kinetic_energy = hydro.KineticEnergy(v_gf);
-         if (mpi.Root())
+         const double internal_energy = hydro.InternalEnergy(e_gf);
+         const double kinetic_energy = hydro.KineticEnergy(v_gf);
+         if(year)
          {
+            if (mpi.Root())
+            {
             const double sqrt_norm = sqrt(norm);
 
             cout << std::fixed;
             cout << "step " << std::setw(5) << ti
-                 << ",\th_min = " << std::setw(5) << std::setprecision(4) << old_stress[0]
-                 << ",\tp_wave = " << std::setw(5) << std::setprecision(4) << old_stress[1]
-                 << ",\tsmooth = " << std::setw(5) << std::setprecision(4) << old_stress[2]
-                 << ",\tt = " << std::setw(5) << std::setprecision(4) << t
-                 << ",\tdt = " << std::setw(5) << std::setprecision(6) << dt
+               //   << ",\th_min = " << std::setw(5) << std::setprecision(4) << old_stress[0]
+               //   << ",\tp_wave = " << std::setw(5) << std::setprecision(4) << old_stress[1]
+               //   << ",\tsmooth = " << std::setw(5) << std::setprecision(4) << old_stress[2]
+                 << ",\tt = " << std::setw(5) << std::setprecision(4) << t/86400/365.25
+                 << ",\tdt = " << std::setw(5) << std::setprecision(6) << std::scientific << dt/86400/365.25
                  << ",\t|e| = " << std::setprecision(10) << std::scientific
                  << sqrt_norm;
             //  << ",\t|IE| = " << std::setprecision(10) << std::scientific
@@ -936,17 +1060,47 @@ int main(int argc, char *argv[])
             //  << kinetic_energy+internal_energy;
             cout << std::fixed;
             if (mem_usage)
-            {
-               cout << ", mem: " << mmax << "/" << msum << " MB";
-            }
+               {
+                  cout << ", mem: " << mmax << "/" << msum << " MB";
+               }
             cout << endl;
+            }
          }
+         else
+         {
+            if (mpi.Root())
+            {
+            const double sqrt_norm = sqrt(norm);
 
+            cout << std::fixed;
+            cout << "step " << std::setw(5) << ti
+               //   << ",\th_min = " << std::setw(5) << std::setprecision(4) << old_stress[0]
+               //   << ",\tp_wave = " << std::setw(5) << std::setprecision(4) << old_stress[1]
+               //   << ",\tsmooth = " << std::setw(5) << std::setprecision(4) << old_stress[2]
+                 << ",\tt = " << std::setw(5) << std::setprecision(4) << t
+                 << ",\tdt = " << std::setw(5) << std::setprecision(6) << dt
+                 << ",\t|e| = " << std::setprecision(10) << std::scientific
+                 << sqrt_norm;
+               //   << ",\t|IE| = " << std::setprecision(10) << std::scientific
+               //   << internal_energy
+               //   << ",\t|KE| = " << std::setprecision(10) << std::scientific
+               //   << kinetic_energy;
+            //   << ",\t|E| = " << std::setprecision(10) << std::scientific
+            //  << kinetic_energy+internal_energy;
+            cout << std::fixed;
+            if (mem_usage)
+               {
+                  cout << ", mem: " << mmax << "/" << msum << " MB";
+               }
+            cout << endl;
+            }
+         }
+         
          // Make sure all ranks have sent their 'v' solution before initiating
          // another set of GLVis connections (one from each rank):
          MPI_Barrier(pmesh->GetComm());
 
-         if (visualization || visit || gfprint) { hydro.ComputeDensity(rho_gf); }
+         if (visualization || visit || gfprint || paraview) { hydro.ComputeDensity(rho_gf); }
          if (visualization)
          {
             int Wx = 0, Wy = 0; // window position
@@ -966,15 +1120,6 @@ int main(int argc, char *argv[])
                                           Wx, Wy, Ww,Wh);
             Wx += offx;
          }
-
-         // for( int i = 0; i < lambda_gf.Size(); i++ ) 
-         // {
-         //    // std::cout << i << " " << i+lambda_gf.Size()*3 << std::endl;
-         //    mu_gf[i] = sigma_gf[i];
-         //    lambda_gf[i] = sigma_gf[i+lambda_gf.Size()*3];
-         // }
-
-         // sigma_gf.ProjectCoefficient(stress_coef);
 
          if (visit)
          {
@@ -1105,7 +1250,7 @@ double rho0(const Vector &x)
    {
       case 0: return 1.0;
       case 1: return 1.0;
-      // case 1: return (3e10+2*3e10)/(1e5*1e5*1e-9);
+      // case 1: return 2800;
       case 2: return (x(0) < 0.5) ? 1.0 : 0.1;
       case 3: return (dim == 2) ? (x(0) > 1.0 && x(1) > 1.5) ? 0.125 : 1.0
                         : x(0) > 1.0 && ((x(1) < 1.5 && x(2) < 1.5) ||
@@ -1192,10 +1337,15 @@ void v0(const Vector &x, Vector &v)
             // v(1)=-0.01;
          }
 
+         // if(x(0) == 80e3)
          if(x(0) == 8)
          {
-            // if(dim == 2){v(1)=-0.1;}
-            if(dim == 3){v(2)=-0.1;}
+            // v(1)=-1e-1;
+            // if(dim == 3){v(2)=-0.1;}
+            // else if(dim == 2){v(0)=-1e-5;}
+            // else if(dim == 2){v(1)=-0.1/86400/365.25;}
+            
+            // else if(dim == 2){v(1)=-0.1;}
             // v = 0.0;
             // v(0)=-0.01;
             // v(1)=-0.1/86400/365.25; // 0.1 mm/yr

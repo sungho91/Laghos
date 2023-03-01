@@ -94,6 +94,7 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
                                                  ParFiniteElementSpace &l2_2,
                                                  const Array<int> &ess_tdofs,
                                                  Coefficient &rho0_coeff,
+                                                 Coefficient &scale_rho0_coeff,
                                                  ParGridFunction &rho0_gf,
                                                  ParGridFunction &gamma_gf,
                                                  const int source,
@@ -106,7 +107,7 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
                                                  double ftz,
                                                  const int oq,
                                                  Vector &_old_stress, Vector &_inc_stress, Vector &_cur_spin, Vector &_old_spin,
-                                                 ParGridFunction &lambda_gf, ParGridFunction &mu_gf) : // -0-
+                                                 ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity) : // -0-
    TimeDependentOperator(size),
    H1(h1), L2(l2), L2_2(l2_2), H1c(H1.GetParMesh(), H1.FEColl(), 1),
    pmesh(H1.GetParMesh()),
@@ -148,7 +149,7 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    forcemat_is_assembled(false),
    gmat_is_assembled(false),
    Force(&L2, &H1),
-   Sigma(&L2_2, &H1),
+   Body_Force(&H1),
    ForcePA(nullptr), VMassPA(nullptr), EMassPA(nullptr), SigmaPA(nullptr),
    VMassPA_Jprec(nullptr),
    CG_VMass(H1.GetParMesh()->GetComm()),
@@ -233,10 +234,18 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
          inv.Factor();
          inv.GetInverseMatrix(Me_inv(e));
       }
+      
+      
+      qdata.mscale  = mscale;
+      qdata.gravity = gravity;
       // Standard assembly for the velocity mass matrix.
-      // std::cout<< "Standard assembly for the velocity mass matrix. " <<std::endl;
-      VectorMassIntegrator *vmi = new VectorMassIntegrator(rho0_coeff, &ir);
+
+      // VectorMassIntegrator *vmi = new VectorMassIntegrator(rho0_coeff, &ir);
+      VectorMassIntegrator *vmi = new VectorMassIntegrator(scale_rho0_coeff, &ir);
       Mv.AddDomainIntegrator(vmi);
+
+      // ConstantCoefficient coeff(mscale);
+      // Mv.AddDomainIntegrator(new MassIntegrator(coeff));
       Mv.Assemble();
       Mv_spmat_copy = Mv.SpMat();
    }
@@ -311,6 +320,11 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
       // Make a dummy assembly to figure out the sparsity.
       Force.Assemble(0);
       Force.Finalize(0);
+
+      BodyForceIntegrator *bi = new BodyForceIntegrator(qdata);
+      bi->SetIntRule(&ir);
+      Body_Force.AddDomainIntegrator(bi);
+      Body_Force.Assemble(0);
    }
 }
 
@@ -531,7 +545,6 @@ void LagrangianHydroOperator::Mult(const Vector &S, Vector &dS_dt, const double 
 void LagrangianHydroOperator::SolveVelocity(const Vector &S,
                                             Vector &dS_dt, const double dt) const
 {
-   // std::cout<<"SolveVelocity"<<std::endl;
    UpdateQuadratureData(S, dt);
    AssembleForceMatrix();
    // The monolithic BlockVector stores the unknown fields as follows:
@@ -539,7 +552,6 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
    ParGridFunction dv;
    dv.MakeRef(&H1, dS_dt, H1Vsize);
    dv = 0.0;
-
    ParGridFunction accel_src_gf;
    if (source_type == 2)
    {
@@ -548,6 +560,15 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
       accel_src_gf.ProjectCoefficient(accel_coeff);
       accel_src_gf.Read();
    }
+
+   
+   
+   // Body Force assemble
+
+   // BodyForceIntegrator *bi = new BodyForceIntegrator(qdata);
+   // bi->SetIntRule(&ir);
+   // Body_Force.AddDomainIntegrator(bi);
+   Body_Force.Assemble();
 
    // #if 
    /*
@@ -625,13 +646,17 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
       Force.Mult(one, rhs);
       timer.sw_force.Stop();
       rhs.Neg();
-      // rhs += *v_source;
+      // rhs += *v_source; 
 
+      // Applying body force
+      rhs.Add(1.0, Body_Force);
+      
+      // Applying damping for all forces such internal, external, and body
       v_damping=0.0;
       v_damping.Add(1.0, rhs);
       Getdamping(S, v_damping);
-      rhs.Add(-1.0, v_damping);
-      
+      rhs.Add(1.0, v_damping);
+
       if (source_type == 2)
       {
          Vector rhs_accel(rhs.Size());
@@ -662,15 +687,9 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
 void LagrangianHydroOperator::SolveEnergy(const Vector &S, const Vector &v,
                                           Vector &dS_dt, const double dt) const
 {
-   // std::cout<<"SolveEnergy"<<std::endl;
-
    UpdateQuadratureData(S, dt);
    AssembleForceMatrix();
-   // std::cout<<"after assembly" <<std::endl;
-   // for (int i = 0; i < e_rhs.Size(); i++)
-   // {
-   //    std::cout<< i <<" "<<e_rhs[i]<<std::endl;
-   // }
+   
    // The monolithic BlockVector stores the unknown fields as follows:
    // (Position, Velocity, Specific Internal Energy).
    ParGridFunction de;
@@ -711,6 +730,7 @@ void LagrangianHydroOperator::SolveEnergy(const Vector &S, const Vector &v,
       timer.sw_force.Start();
       Force.MultTranspose(v, e_rhs);
       timer.sw_force.Stop();
+
       if (e_source) { e_rhs += *e_source; }
       Vector loc_rhs(l2dofs_cnt), loc_de(l2dofs_cnt);
       for (int e = 0; e < NE; e++)
@@ -722,8 +742,6 @@ void LagrangianHydroOperator::SolveEnergy(const Vector &S, const Vector &v,
          timer.sw_cgL2.Stop();
          timer.L2iter += 1;
          de.SetSubVector(l2dofs, loc_de);
-
-         // std::cout<< e <<" "<< l2dofs[0] << " " << l2dofs[1]  <<  " " << l2dofs[2] <<  " " << l2dofs[3] << std::endl;
       }
    }
    delete e_source;
@@ -800,7 +818,6 @@ void LagrangianHydroOperator::SolveStress(const Vector &S,
    }
    else if(dim == 3)
    {
-      // std::cout << "SolveStress in 3D " <<std::endl;
       Vector sub_rhs1(l2_2dofs_cnt), sub_rhs2(l2_2dofs_cnt), sub_rhs3(l2_2dofs_cnt);
       Vector sub_rhs4(l2_2dofs_cnt), sub_rhs5(l2_2dofs_cnt), sub_rhs6(l2_2dofs_cnt);
       Vector sub_rhs7(l2_2dofs_cnt), sub_rhs8(l2_2dofs_cnt), sub_rhs9(l2_2dofs_cnt);
@@ -914,19 +931,18 @@ void LagrangianHydroOperator::Getdamping(const Vector &S, Vector &_v_damping) co
    Vector* sptr = const_cast<Vector*>(&S);
    ParGridFunction v;
    v.MakeRef(&H1, *sptr, H1.GetVSize());
-   // for( int i = 0; i < v.Size(); i++ ){_v_damping[i] = 1.0*(v[i]/fabs(v[i]))*fabs(_v_damping[i]);}
    for( int i = 0; i < v.Size(); i++ )
-   {  
+   {
       if(v[i] >= 0)
       {
-         _v_damping[i] = 0.00*fabs(_v_damping[i]);
+         _v_damping[i] = -1*0.8*fabs(_v_damping[i]);
       }
       else
       {
-         _v_damping[i] = -0.00*fabs(_v_damping[i]);
+         _v_damping[i] = 1*0.8*fabs(_v_damping[i]);
       }
-
    }
+
 }
 
 // double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S) const
@@ -940,6 +956,17 @@ void LagrangianHydroOperator::Getdamping(const Vector &S, Vector &_v_damping) co
 // }
 
 double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S, const double dt) const
+{
+   UpdateMesh(S);
+   UpdateQuadratureData(S, dt);
+   double glob_dt_est;
+   const MPI_Comm comm = H1.GetParMesh()->GetComm();
+   MPI_Allreduce(&qdata.dt_est, &glob_dt_est, 1, MPI_DOUBLE, MPI_MIN, comm);
+   return glob_dt_est;
+}
+
+
+double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S, const double dt, bool IamRoot) const
 {
    UpdateMesh(S);
    UpdateQuadratureData(S, dt);
@@ -1226,6 +1253,12 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
    Vector e_vals;
    DenseMatrix Jpi(dim), sgrad_v(dim), Jinv(dim), stress(dim), stressJiT(dim);
 
+   double mscale{1.0};
+   double grav{0.0};
+
+   mscale = qdata.mscale;
+   grav   = qdata.gravity;
+
    // Batched computations are needed, because hydrodynamic codes usually
    // involve expensive computations of material properties. Although this
    // miniapp uses simple EOS equations, we still want to represent the batched
@@ -1278,7 +1311,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
       }
 
       // Batched computation of material properties.
-      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b, pmod_b);
+      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b, pmod_b, mscale);
 
       z_id -= nzones_batch;
       for (int z = 0; z < nzones_batch; z++)
@@ -1336,8 +1369,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
                const double eps = 1e-12;
                visc_coeff += 0.5 * rho * h * sound_speed * vorticity_coeff *
                              (1.0 - smooth_step_01(mu - 2.0 * eps, eps));
-               // stress.Add(0.0, sgrad_v);
-               stress.Add(visc_coeff, sgrad_v);
+               stress.Add(visc_coeff, sgrad_v); // applying visc_coeff
             }
             // Time step estimate at the point. Here the more relevant length
             // scale is related to the actual mesh deformation; we use the min
@@ -1346,7 +1378,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
             const double h_min =
                Jpr.CalcSingularvalue(dim-1) / (double) H1.GetOrder(0);
             const double inv_dt = sound_speed / h_min +
-                                  2.5 * visc_coeff / rho / h_min / h_min;
+                                  2.5 * visc_coeff / (rho*1) / h_min / h_min;
             if (min_detJ < 0.0)
             {
                // This will force repetition of the step with smaller dt.
@@ -1410,19 +1442,24 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
    Vector sxx, syy, szz;
    Vector sxy, sxz, syz;
 
-   Vector dummy;
    DenseMatrix Jpi(dim), sgrad_v(dim), Jinv(dim), stress(dim), stressJiT(dim);
    DenseMatrix spin(dim), srate(dim);
    DenseMatrix tau0(dim), tau1(dim);
    DenseMatrix old_sig(dim);
    DenseMatrix crot1(dim), crot2(dim);
+   DenseMatrix buoy(dim);
 
    double lame1{1.0};
    double lame2{1.0};
    double max_vel{1.0};
-   double mscale{1.0e5};
-   max_vel = std::max(fabs(v.Min()), v.Max());
-   const double pseudo_speed = max_vel * mscale;
+   double mscale{1.0};
+   double grav{0.0};
+
+   mscale = qdata.mscale;
+   grav   = qdata.gravity;
+
+   // max_vel = std::max(fabs(v.Min()), v.Max());
+   // const double pseudo_speed = max_vel * mscale;
 
    // std::cout << v.Size() << " , "<< "vmax "<< v.Max() << ", vmin " << v.Min() << ", speed " << pseudo_speed << std::endl;
 
@@ -1443,7 +1480,6 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
    *pmod_b = new double[nqp_batch];
    // Jacobians of reference->physical transformations for all quadrature points
    // in the batch.
-   // std::cout << "NE "<< NE << " Number of quard points " << nqp << " n batches " << nbatches <<" Batched elemetns size : " << nqp_batch << std::endl;
    DenseTensor *Jpr_b = new DenseTensor[nzones_batch];
    for (int b = 0; b < nbatches; b++)
    {
@@ -1483,7 +1519,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
          ++z_id;
       }
       // Batched computation of material properties.
-      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b, pmod_b);
+      ComputeMaterialProperties(nqp_batch, gamma_b, rho_b, e_b, p_b, cs_b, pmod_b, mscale);
 
       z_id -= nzones_batch;
       for (int z = 0; z < nzones_batch; z++)
@@ -1501,7 +1537,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
             // not to store the Jacobians for all batched quadrature points.
             const DenseMatrix &Jpr = Jpr_b[z](q);
             CalcInverse(Jpr, Jinv);
-            const double detJ = Jpr.Det(), rho = rho_b[z*nqp + q],
+            const double detJ = Jpr.Det(), rho = mscale*rho_b[z*nqp + q],
                          p = p_b[z*nqp + q], sound_speed = cs_b[z*nqp + q];
             
             // const double detJ = Jpr.Det(), rho = rho_b[z*nqp + q],
@@ -1510,6 +1546,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
             lame1 = lambda_b[z*nqp + q];
             lame2 = mu_b[z*nqp + q];
             stress = 0.0; tau0 = 0.0; tau1 = 0.0; old_sig = 0.0;
+            buoy   = 0.0; buoy(dim-1, dim-1) = -1.0*grav;
 
             for (int d = 0; d < dim; d++) { stress(d, d) = 0; }
             // for (int d = 0; d < dim; d++) { stress(d, d) = -p; }
@@ -1588,18 +1625,14 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                const double eps = 1e-12;
                visc_coeff += 0.5 * rho * h * sound_speed * vorticity_coeff *
                              (1.0 - smooth_step_01(mu - 2.0 * eps, eps));
-
-               stress.Add(visc_coeff, sgrad_v);
-               // stress.Add(0.0, sgrad_v);
-               // stress=0.0;
-               // for (int d = 0; d < dim; d++) { stress(d, d) = (lame1+2*lame2)*sgrad_v.Trace()/3; }
-
-               stress.Add(1.0, old_sig); // Adding deviatoric term to get total stress
+             
+               stress.Add(0.00*visc_coeff, sgrad_v); // applying visc_coeff
+               stress.Add(1.0, old_sig); // previous total stress
 
                // #if
                
-               tau0.Set(2*lame2, srate); // 
-               tau1.Set(2*lame1*srate.Trace()/dim, tau1); // 2*lamda*divergence(velocity gradient)*(1/dim)*Identity
+               tau0.Set(2*lame2,srate); // 2 * G * eij
+               tau1.Set(1*lame1*srate.Trace(), tau1); // lambda*tr(strain rate)*Identity
                tau0.Add(1.0, tau1); // stress rate for s_ij grid function.
                // tau0.Add(-1.0, tau1); // deviatoric stress rate for s_ij grid function.
                
@@ -1610,6 +1643,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                tau0.Add(1.0,  crot1); 
                tau0.Add(-1.0, crot2); 
                // #ifend
+
             }
             // Time step estimate at the point. Here the more relevant length
             // scale is related to the actual mesh deformation; we use the min
@@ -1620,7 +1654,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
 
             const double inv_dt = sound_speed / h_min +
                                   2.5 * visc_coeff / rho / h_min / h_min;
-            const double smooth = 2.5 * visc_coeff / rho / h_min / h_min;
+            // const double smooth = 2.5 * visc_coeff / rho / h_min / h_min;
 
             // std::cout << sound_speed << " / " << pseudo_speed << std::endl;
             // std::cout << z_id << ", "<< q << ", hmin " << h_min << std::endl;
@@ -1635,15 +1669,16 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                if (inv_dt>0.0)
                {
                   qdata.dt_est = fmin(qdata.dt_est, cfl*(1.0/inv_dt));
-                  old_stress[0] = fmin(old_stress[0], h_min); // check h_min size
-                  old_stress[1] = fmax(old_stress[1], sound_speed); // check h_min size
-                  old_stress[2] = fmax(old_stress[2], smooth); // check h_min size
+                  // old_stress[0] = fmin(old_stress[0], h_min); // check h_min size
+                  // old_stress[1] = fmax(old_stress[1], sound_speed); // check h_min size
+                  // old_stress[2] = fmax(old_stress[2], smooth); // check h_min size
                }
             }
             // Quadrature data for partial assembly of the force operator.
             MultABt(stress, Jinv, stressJiT);
             stressJiT *= ir.IntPoint(q).weight * detJ;
-            tau0 *= rho*ir.IntPoint(q).weight * detJ; // rho*stress*weight*det[J]
+            tau0 *= ir.IntPoint(q).weight * detJ * (rho / mscale); 
+            buoy *= ir.IntPoint(q).weight * detJ * (rho / mscale);
 
             for (int vd = 0 ; vd < dim; vd++)
             {
@@ -1651,10 +1686,9 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                {
                   const int offset = z_id*nqp + q + nqp*NE*(gd + vd*dim);
                   
-                  qdata.stressJinvT(vd)(z_id*nqp + q, gd) =
-                     stressJiT(vd, gd);
-                  qdata.tauJinvT(vd)(z_id*nqp + q, gd) = tau0(vd, gd);
-                  // if(vd == 0){std::cout<< vd << "," << gd << "," << tau0(vd, gd)  << std::endl;}
+                  qdata.stressJinvT(vd)(z_id*nqp + q, gd) = stressJiT(vd, gd);
+                  qdata.tauJinvT(vd)(z_id*nqp + q, gd)    = tau0(vd, gd);
+                  qdata.buoyJinvT(vd)(z_id*nqp + q, gd)   = buoy(vd, gd);
                   // old_stress[offset] = tau0(vd, gd);
                }
             }

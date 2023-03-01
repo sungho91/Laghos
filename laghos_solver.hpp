@@ -178,7 +178,8 @@ protected:
    // right-hand sides for momentum and specific internal energy.
    mutable MixedBilinearForm Force;
    // G matrix is in thermodynamic spaces.
-   mutable MixedBilinearForm Sigma;
+   mutable LinearForm Body_Force;
+   // mutable MixedBilinearForm Sigma;
    // Same as above, but done through partial assembly.
    ForcePAOperator *ForcePA;
    ForcePAOperator *SigmaPA;
@@ -191,17 +192,20 @@ protected:
    mutable TimingData timer;
    mutable QUpdate *qupdate;
    mutable Vector X, B, one, rhs, v_damping, e_rhs, sig_rhs, sig_one;
+   // mutable Vector body_force;
    mutable ParGridFunction rhs_c_gf, dvc_gf;
    mutable Array<int> c_tdofs[3];
 
    virtual void ComputeMaterialProperties(int nvalues, const double gamma[],
                                           const double rho[], const double e[],
-                                          double p[], double cs[], double pmod[]) const
+                                          double p[], double cs[], double pmod[], double mscale) const
    {
+      // double mscale{1.0e20};
       for (int v = 0; v < nvalues; v++)
       {
          p[v]  = rho[v] * e[v];
-         cs[v] = sqrt(pmod[v]/rho[v]);
+         cs[v] = sqrt(pmod[v]/(rho[v]*mscale));
+         // cs[v] = sqrt(pmod[v]/rho[v]);
          // p[v]  = (gamma[v] - 1.0) * rho[v] * e[v];
          // cs[v] = sqrt(gamma[v] * (gamma[v]-1.0) * e[v]);
       }
@@ -219,6 +223,7 @@ public:
                            ParFiniteElementSpace &l2_2_fes,
                            const Array<int> &ess_tdofs,
                            Coefficient &rho0_coeff,
+                           Coefficient &scale_rho0_coeff,
                            ParGridFunction &rho0_gf,
                            ParGridFunction &gamma_gf,
                            const int source,
@@ -226,7 +231,7 @@ public:
                            const bool visc, const bool vort, const bool pa,
                            const double cgt, const int cgiter, double ftz_tol,
                            const int order_q, Vector &old_stress, Vector &inc_stress, Vector &cur_spin, Vector &old_spin,
-                           ParGridFunction &lambda_gf, ParGridFunction &mu_gf);
+                           ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity);
    ~LagrangianHydroOperator();
 
    // Solve for dx_dt, dv_dt and de_dt.
@@ -244,10 +249,12 @@ public:
    void SolveStress(const Vector &S, Vector &dS_dt, const double dt) const;
    void UpdateMesh(const Vector &S) const;
    void Getdamping(const Vector &S, Vector &_v_damping) const;
+   // void Getbuoy(const Vector &S, Vector &_body_force) const;
 
    // Calls UpdateQuadratureData to compute the new qdata.dt_estimate.
    // double GetTimeStepEstimate(const Vector &S) const;
    double GetTimeStepEstimate(const Vector &S, const double dt) const;
+   double GetTimeStepEstimate(const Vector &S, const double dt, bool IamRoot) const;
    void ResetTimeStepEstimate() const;
    void ResetQuadratureData() const { qdata_is_current = false; }
 

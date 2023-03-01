@@ -46,6 +46,8 @@
         "vector": "cpp",
         "functional": "cpp",
         "memory": "cpp",
-        "numeric": "cpp"
+        "numeric": "cpp",
+        "chrono": "cpp",
+        "ratio": "cpp"
     }
 }

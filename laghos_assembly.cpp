@@ -114,40 +114,6 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
          }
       }
    }
-
-   /*
-   for (int q = 0; q < nqp; q++)
-   {
-      
-      fe.CalcShape(IntRule->IntPoint(q), shape);
-      const int eq = e*nqp + q; // quardature point
-      sxx = qdata.tauJinvT(0)(eq, 0);
-      sxy = qdata.tauJinvT(0)(eq, 1);
-      syx = qdata.tauJinvT(1)(eq, 0);
-      syy = qdata.tauJinvT(1)(eq, 1);
-
-      elvect[0] = elvect[0] + shape[0]*sxx;
-      elvect[1] = elvect[1] + shape[1]*sxx;
-      elvect[2] = elvect[2] + shape[2]*sxx;
-      elvect[3] = elvect[3] + shape[3]*sxx;
-
-      elvect[4] = elvect[4] + shape[0]*sxy;
-      elvect[5] = elvect[5] + shape[1]*sxy;
-      elvect[6] = elvect[6] + shape[2]*sxy;
-      elvect[7] = elvect[7] + shape[3]*sxy;
-
-      elvect[8]  = elvect[8]  + shape[0]*syx;
-      elvect[9]  = elvect[9]  + shape[1]*syx;
-      elvect[10] = elvect[10] + shape[2]*syx;
-      elvect[11] = elvect[11] + shape[3]*syx;
-
-      elvect[12]  = elvect[12]  + shape[0]*syy;
-      elvect[13]  = elvect[13]  + shape[1]*syy;
-      elvect[14]  = elvect[14]  + shape[2]*syy;
-      elvect[15]  = elvect[15]  + shape[3]*syy;
-
-   }
-   */
 }
 
 /*
@@ -222,6 +188,7 @@ void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
       const IntegrationPoint &ip = IntRule->IntPoint(q);
       // Form stress:grad_shape at the current point.
       test_fe.CalcDShape(ip, vshape);
+      
       for (int i = 0; i < h1dofs_cnt; i++)
       {
          for (int vd = 0; vd < dim; vd++) // Velocity components.
@@ -240,6 +207,61 @@ void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
    }
 }
 
+void BodyForceIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
+                                               ElementTransformation &Tr,
+                                               Vector &elvect)
+{
+   const int e = Tr.ElementNo;
+   const int nqp = IntRule->GetNPoints();
+   const int dim = fe.GetDim();
+   const int dim2 = dim*dim;
+   const int num = fe.GetDof(); 
+   
+   Vector shape(num);
+   elvect.SetSize(num*dim);
+   elvect = 0.0;
+   double grav0{0.0};
+   double grav1{0.0};
+   double grav2{0.0};
+   
+   if(dim == 2)
+   {
+      for (int q = 0; q < nqp; q++)
+      {
+         const IntegrationPoint &ip = IntRule->IntPoint(q);
+
+         fe.CalcShape(ip, shape);
+         const int eq = e*nqp + q; // quardature point
+         grav0 = qdata.buoyJinvT(1)(eq, 0); 
+         grav1 = qdata.buoyJinvT(1)(eq, 1);
+         for (int i = 0; i < num; i++) // H1 dof (i.e. 9 for second order)
+         {
+            elvect[i+num*0] = elvect[i+num*0] + shape[i]*grav0; // in x direction
+            elvect[i+num*1] = elvect[i+num*1] + shape[i]*grav1; // in y direction
+         }
+      }
+   }
+   else if(dim == 3)
+   {
+      for (int q = 0; q < nqp; q++)
+      {
+         const IntegrationPoint &ip = IntRule->IntPoint(q);
+
+         fe.CalcShape(ip, shape);
+         const int eq = e*nqp + q; // quardature point
+         grav0 = qdata.buoyJinvT(2)(eq, 0); 
+         grav1 = qdata.buoyJinvT(2)(eq, 1); 
+         grav2 = qdata.buoyJinvT(2)(eq, 2); 
+
+         for (int i = 0; i < num; i++) // H1 dof (i.e. 9 for second order)
+         {
+            elvect[i+num*0] = elvect[i+num*0] + shape[i]*grav0; // in x direction
+            elvect[i+num*1] = elvect[i+num*1] + shape[i]*grav1; // in y direction
+            elvect[i+num*2] = elvect[i+num*2] + shape[i]*grav2; // in z direction
+         }
+      }
+   }
+}
 
 MassPAOperator::MassPAOperator(ParFiniteElementSpace &pfes,
                                const IntegrationRule &ir,

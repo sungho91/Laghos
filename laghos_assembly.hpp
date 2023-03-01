@@ -49,7 +49,9 @@ struct QuadratureData
 
    // Quadrature data used for full/partial assembly of the stress rate operator.
    DenseTensor tauJinvT;
-   // Vector tauJinvT;
+   
+   // Quadrature data used for full/partial assembly of the body force operator.
+   DenseTensor buoyJinvT; // We store it (vector) as a tensor form.
 
    // Initial length scale. This represents a notion of local mesh size.
    // We assume that all initial zones have similar size.
@@ -59,10 +61,17 @@ struct QuadratureData
    // recomputed at every time step to achieve adaptive time stepping.
    double dt_est;
 
+   // mass_scale
+   double mscale;
+
+   // gravity
+   double gravity;
+
    QuadratureData(int dim, int NE, int quads_per_el)
       : Jac0inv(dim, dim, NE * quads_per_el),
         stressJinvT(NE * quads_per_el, dim, dim),
         tauJinvT(NE * quads_per_el, dim, dim),
+        buoyJinvT(NE * quads_per_el, dim, dim),
         rho0DetJ0w(NE * quads_per_el) { }
 };
 
@@ -123,6 +132,18 @@ public:
                                        DenseMatrix &elmat);
 };
 
+class BodyForceIntegrator : public LinearFormIntegrator
+{
+   using LinearFormIntegrator::AssembleRHSElementVect;
+private:
+   const QuadratureData &qdata;
+
+public:
+   BodyForceIntegrator(QuadratureData &qdata) : qdata(qdata) { }
+   virtual void AssembleRHSElementVect(const FiniteElement &fe,
+                                       ElementTransformation &Tr,
+                                       Vector &elvect);
+};
 
 // Performs partial assembly for the force operator.
 class ForcePAOperator : public Operator
