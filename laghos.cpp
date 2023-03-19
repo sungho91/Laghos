@@ -79,6 +79,7 @@ double rho0(const Vector &);
 double gamma_func(const Vector &);
 void v0(const Vector &, Vector &);
 void u0(const Vector &, Vector &);
+void f_exact(const Vector &, Vector &);
 
 static long GetMaxRssMB();
 static void display_banner(std::ostream&);
@@ -150,7 +151,7 @@ int main(int argc, char *argv[])
    int ode_solver_type = 7;
    double t_final = 1.0;
    double cfl = 0.5;
-   double cg_tol = 1e-10;
+   double cg_tol = 1e-12;
    double ftz_tol = 0.0;
    int cg_max_iter = 300;
    int max_tsteps = -1;
@@ -173,7 +174,7 @@ int main(int argc, char *argv[])
    // bool year = true;
    double init_dt = 1.0;
    // double mscale  = 1.0;
-   double mscale  = 1.0e6;
+   double mscale  = 1.0e4;
    double gravity = 10.0; // magnitude 
    // double init_dt = 1e-1;
    double blast_energy = 0.0;
@@ -500,36 +501,16 @@ int main(int argc, char *argv[])
    ParFiniteElementSpace H1FESpace(pmesh, &H1FEC, pmesh->Dimension());
    ParFiniteElementSpace L2FESpace_2(pmesh, &L2FEC, dim*dim); // three varibles for 2D, six varibles for 3D
 
+   // if(myid == 0){std::cout << pmesh->GetNSharedFaces()  <<std::endl;}
+   // if(myid == 0){std::cout << pmesh->GetVertices()  <<std::endl;}
+   
    // Boundary conditions: all tests use v.n = 0 on the boundary, and we assume
    // that the boundaries are straight.
    Array<int> ess_tdofs, ess_vdofs;
    {
       Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
-      /*Free slip for all sides*/
-      // for (int d = 0; d < pmesh->Dimension(); d++)
-      // {
-      //    // Attributes 1/2/3 correspond to fixed-x/y/z boundaries,
-      //    // i.e., we must enforce v_x/y/z = 0 for the velocity components.
-      //    ess_bdr = 0; ess_bdr[d] = 1;
-      //    H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, d);
-      //    ess_tdofs.Append(dofs_list);
-      //    H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, d);
-      //    FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      //    ess_vdofs.Append(dofs_list);
-      // }
-
-      // oedometer2d
-      /*
-      ess_bdr = 0; ess_bdr[0] = 1;
-      // -x boundary and v_x = 0, v_y is free
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      ess_bdr = 0; ess_bdr[1] = 1;
-      // +x boundary and v_x = v0 and v_y = 0
+      ess_bdr = 0; ess_bdr[0] = 1; 
+      // ess_bdr[1] = 1;
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
@@ -537,74 +518,11 @@ int main(int argc, char *argv[])
       ess_vdofs.Append(dofs_list);
 
       ess_bdr = 0; ess_bdr[2] = 1;
-      // -y / +y boundary and v_x is free and v_y = 0
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-      */
-      
-      // oedometer2d
-      /*
-      ess_bdr = 0; ess_bdr[0] = 1;
-      // -x boundary and v_x = 0, v_y, v_z is free
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
-
-      ess_bdr = 0; ess_bdr[1] = 1;
-      // +x boundary and v_x = v0 and v_y = 0
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      ess_bdr = 0; ess_bdr[2] = 1;
-      // -y / +y boundary and v_x and v_z are free and v_y = 0
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      ess_bdr = 0; ess_bdr[3] = 1;
-      // -z / +z boundary and v_x and v_y are free and v_z = 0
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 2);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 2);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-      */
-
-      // Boundary condition for elastic beam and thin plate
-      ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      // ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
-      // // -x boundary and v_x = 0, v_y, v_z is free
-      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
-      // ess_tdofs.Append(dofs_list);
-      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
-      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      // ess_vdofs.Append(dofs_list);
-      
-      /*
-      // constrain on sides
-      ess_bdr = 0; ess_bdr[2] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-      */
    }
 
    // Define the explicit ODE solver used for time integration.
@@ -645,12 +563,14 @@ int main(int argc, char *argv[])
    const int Vsize_l2 = L2FESpace.GetVSize();
    const int Vsize_h1 = H1FESpace.GetVSize();
    // Array<int> offset(4);
-   Array<int> offset(5); 
+   Array<int> offset(5);
+   // Array<int> offset(6); 
    offset[0] = 0;
    offset[1] = offset[0] + Vsize_h1;
    offset[2] = offset[1] + Vsize_h1;
    offset[3] = offset[2] + Vsize_l2;
    offset[4] = offset[3] + Vsize_l2*dim*dim;
+   // offset[5] = offset[4] + Vsize_h1;
    BlockVector S(offset, Device::GetMemoryType());
 
    // Define GridFunction objects for the position, velocity and specific
@@ -672,6 +592,7 @@ int main(int argc, char *argv[])
    // Initialize the velocity.
    VectorFunctionCoefficient v_coeff(pmesh->Dimension(), v0);
    v_gf.ProjectCoefficient(v_coeff);
+
 
    // For the Sedov test, we use a delta function at the origin.
    // Vector dir(pmesh->Dimension());
@@ -743,10 +664,10 @@ int main(int argc, char *argv[])
    // Piecewise constant elastic stiffness over the Lagrangian mesh.
    // Lambda and Mu is Lame's first and second constants
    Vector lambda(pmesh->attributes.Max());
-   lambda = 200e6;
+   lambda = 4.0e8;
    PWConstCoefficient lambda_func(lambda);
    Vector mu(pmesh->attributes.Max());
-   mu = 200e6;
+   mu = 4.0e8;
    PWConstCoefficient mu_func(mu);
    
    // Project PWConstCoefficient to grid function
@@ -769,28 +690,6 @@ int main(int argc, char *argv[])
    ParGridFunction test_gf(&L2FESpace_2); 
    test_gf.ProjectCoefficient(stress_coef);
 
-   /*
-   // Define GridFunction objects for the initial position and displacement. 
-   Array<int> offset2(3);
-   offset2[0] = 0;
-   offset2[1] = offset2[0] + Vsize_h1;
-   offset2[2] = offset2[1] + Vsize_h1;
-   BlockVector S2(offset2, Device::GetMemoryType());
-
-   ParGridFunction x0_gf, u_gf;
-   x0_gf.MakeRef(&H1FESpace, S2, offset2[0]);
-   u_gf.MakeRef(&H1FESpace, S2, offset2[1]);
-
-   // Initialize x_gf using the starting mesh coordinates.
-   pmesh->SetNodalGridFunction(&x0_gf);
-   // Sync the data location of x0_gf with its base, S2
-   x0_gf.SyncAliasMemory(S2);
-
-   // Initialize the displacement
-   for( int i = 0; i < u_gf.Size(); i++ ) {u_gf[i] = x_gf[i]-x0_gf[i];}
-   // Sync the data location of u_gf with its base, S2
-   u_gf.SyncAliasMemory(S2);
-   */
 
    ParGridFunction u_gf(&H1FESpace);  // Displacment
    ParGridFunction x0_gf(&H1FESpace); // Initial mesh (reference configuration)
@@ -815,6 +714,7 @@ int main(int argc, char *argv[])
    StressCoefficient stress_coef(dim, v_gf, lambda_func, mu_func);
    sigma_gf.ProjectCoefficient(stress_coef);
    */
+
 
    // Vectors for stress and spin rate at quardracture points
    const IntegrationRule &irs = IntRules.Get(pmesh->GetElementBaseGeometry(0), \
@@ -960,7 +860,6 @@ int main(int argc, char *argv[])
    {
       std::cout<<""<<std::endl;
       std::cout<<"simulation starts"<<std::endl;
-      // std::cout << dt << std::endl;
    }
 
    for (int ti = 1; !last_step; ti++)
@@ -1008,6 +907,7 @@ int main(int argc, char *argv[])
       e_gf.SyncAliasMemory(S);
       s_gf.SyncAliasMemory(S);
 
+
       test_gf.ProjectCoefficient(stress_coef); // this is stress to debug 
 
       // Adding stress increment to total stress and storing spin rate
@@ -1019,10 +919,11 @@ int main(int argc, char *argv[])
       // needed, because some time integrators use different S-type vectors
       // and the oper object might have redirected the mesh positions to those.
       pmesh->NewNodes(x_gf, false);
-      // u_gf.subtract(x_gf, x0_gf);
       u_gf = x0_gf;
       u_gf -= x_gf;
       u_gf.Neg();
+
+      // hydro.ComputeDensity(rho_gf);
       
 
       if (last_step || (ti % vis_steps) == 0)
@@ -1293,6 +1194,21 @@ double gamma_func(const Vector &x)
 
 static double rad(double x, double y) { return sqrt(x*x + y*y); }
 
+void f_exact(const Vector &x, Vector &f)
+{
+   if (dim == 3)
+   {
+      f(0) = 1;
+      f(1) = 2;
+      f(2) = 3;
+   }
+   else
+   {
+      f(0) = 1;
+      f(1) = 2;
+   }
+}
+
 void u0(const Vector &x, Vector &v)
 {
    if (x.Size() == 2)
@@ -1341,8 +1257,8 @@ void v0(const Vector &x, Vector &v)
          if(x(0) == 8)
          {
             // v(1)=-1e-1;
-            // if(dim == 3){v(2)=-0.1;}
-            // else if(dim == 2){v(0)=-1e-5;}
+            // if(dim == 3){v(2)=-0.01;}
+            // else if(dim == 2){v(1)=-0.01;}
             // else if(dim == 2){v(1)=-0.1/86400/365.25;}
             
             // else if(dim == 2){v(1)=-0.1;}
@@ -1350,6 +1266,10 @@ void v0(const Vector &x, Vector &v)
             // v(0)=-0.01;
             // v(1)=-0.1/86400/365.25; // 0.1 mm/yr
          } 
+         if(x(0) == 8)
+         {
+            v(1)=-5e-2;
+         }
 
          break;
       case 2: v = 0.0; break;

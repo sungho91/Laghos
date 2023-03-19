@@ -183,6 +183,7 @@ void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
    elmat = 0.0;
    DenseMatrix vshape(h1dofs_cnt, dim), loc_force(h1dofs_cnt, dim);
    Vector shape(l2dofs_cnt), Vloc_force(loc_force.Data(), h1dofs_cnt*dim);
+
    for (int q = 0; q < nqp; q++)
    {
       const IntegrationPoint &ip = IntRule->IntPoint(q);
@@ -199,6 +200,8 @@ void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
                const int eq = e*nqp + q;
                const double stressJinvT = qdata.stressJinvT(vd)(eq, gd);
                loc_force(i, vd) +=  stressJinvT * vshape(i,gd);
+               // if((q == 0) & (i == 0) & (vd == 0) & (gd == 0)){std::cout << e << " , " << eq <<std::endl;}
+
             }
          }
       }
@@ -234,6 +237,8 @@ void BodyForceIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
          const int eq = e*nqp + q; // quardature point
          grav0 = qdata.buoyJinvT(1)(eq, 0); 
          grav1 = qdata.buoyJinvT(1)(eq, 1);
+
+         // std::cout << e << " , " << q << ", " << grav1 <<std::endl;
          for (int i = 0; i < num; i++) // H1 dof (i.e. 9 for second order)
          {
             elvect[i+num*0] = elvect[i+num*0] + shape[i]*grav0; // in x direction

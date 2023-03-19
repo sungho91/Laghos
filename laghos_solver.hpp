@@ -191,7 +191,7 @@ protected:
    CGSolver CG_VMass, CG_EMass;
    mutable TimingData timer;
    mutable QUpdate *qupdate;
-   mutable Vector X, B, one, rhs, v_damping, e_rhs, sig_rhs, sig_one;
+   mutable Vector X, B, one, rhs, e_rhs, sig_rhs, sig_one;
    // mutable Vector body_force;
    mutable ParGridFunction rhs_c_gf, dvc_gf;
    mutable Array<int> c_tdofs[3];
@@ -243,14 +243,15 @@ public:
 
    // void SolveVelocity(const Vector &S, Vector &dS_dt) const;
    // void SolveEnergy(const Vector &S, const Vector &v, Vector &dS_dt) const;
+   
    void SolveVelocity(const Vector &S, Vector &dS_dt, const double dt) const;
    // void SolveVelocity(const Vector &S, Vector &dS_dt, const double dt, const double t) const;
    void SolveEnergy(const Vector &S, const Vector &v, Vector &dS_dt, const double dt) const;
    void SolveStress(const Vector &S, Vector &dS_dt, const double dt) const;
    void UpdateMesh(const Vector &S) const;
+   // void test_function(const Vector &S, Vector &_test) const;
    void Getdamping(const Vector &S, Vector &_v_damping) const;
-   // void Getbuoy(const Vector &S, Vector &_body_force) const;
-
+   
    // Calls UpdateQuadratureData to compute the new qdata.dt_estimate.
    // double GetTimeStepEstimate(const Vector &S) const;
    double GetTimeStepEstimate(const Vector &S, const double dt) const;
