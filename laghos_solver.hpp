@@ -25,7 +25,7 @@
 namespace mfem
 {
 
-namespace hydrodynamics
+namespace geodynamics
 {
 
 /// Visualize the given parallel grid function, using a GLVis server on the
@@ -68,18 +68,13 @@ private:
    Vector q_dt_est, q_e, e_vec, q_dx, q_dv;
    const QuadratureInterpolator *q1,*q2;
    const ParGridFunction &gamma_gf;
-   Vector &old_stress; // new member of stress tensor
-   Vector &inc_stress; // new member of stress tensor
-   Vector &cur_spin; // new member of spin rate tensor
-   Vector &old_spin; // new member of spin rate tensor
-   // ParGridFunction &sigma_gf; // new member of stress tensor
 public:
    QUpdate(const int d, const int ne, const int q1d,
            const bool visc, const bool vort,
            const double cfl, TimingData *t,
            const ParGridFunction &gamma_gf,
            const IntegrationRule &ir,
-           ParFiniteElementSpace &h1, ParFiniteElementSpace &l2, Vector &old_stress, Vector &inc_stress, Vector &cur_spin, Vector &old_spin):
+           ParFiniteElementSpace &h1, ParFiniteElementSpace &l2):
       dim(d), vdim(h1.GetVDim()),
       NQ(ir.GetNPoints()), NE(ne), Q1D(q1d),
       use_viscosity(visc), use_vorticity(vort), cfl(cfl),
@@ -92,11 +87,7 @@ public:
       q_dv(NQ*NE*vdim*vdim),
       q1(H1.GetQuadratureInterpolator(ir)),
       q2(L2.GetQuadratureInterpolator(ir)),
-      gamma_gf(gamma_gf),
-      old_stress(old_stress),
-      inc_stress(inc_stress),
-      cur_spin(cur_spin),
-      old_spin(old_spin) { }
+      gamma_gf(gamma_gf) { }
    
    QUpdate(const int d, const int ne, const int q1d,
            const bool visc, const bool vort,
@@ -117,11 +108,7 @@ public:
       q_dv(NQ*NE*vdim*vdim),
       q1(H1.GetQuadratureInterpolator(ir)),
       q2(L2.GetQuadratureInterpolator(ir)),
-      gamma_gf(gamma_gf),
-      old_stress(old_stress),
-      inc_stress(inc_stress),
-      cur_spin(cur_spin),
-      old_spin(old_spin) { }
+      gamma_gf(gamma_gf) { }
 
    void UpdateQuadratureData(const Vector &S, QuadratureData &qdata);
    void UpdateQuadratureData(const Vector &S, QuadratureData &qdata, const double dt);
@@ -129,10 +116,10 @@ public:
 
 // Given a solutions state (x, v, e), this class performs all necessary
 // computations to evaluate the new slopes (dx_dt, dv_dt, de_dt).
-class LagrangianHydroOperator : public TimeDependentOperator
+class LagrangianGeoOperator : public TimeDependentOperator
 {
 protected:
-   ParFiniteElementSpace &H1, &L2, &L2_2;
+   ParFiniteElementSpace &H1, &L2, &L2_stress;
    mutable ParFiniteElementSpace H1c;
    ParMesh *pmesh;
    // FE spaces local and global sizes
@@ -146,7 +133,7 @@ protected:
    // Reference to the current mesh configuration.
    mutable ParGridFunction x_gf;
    const Array<int> &ess_tdofs;
-   const int dim, NE, l2dofs_cnt, l2_2dofs_cnt, h1dofs_cnt, source_type;
+   const int dim, NE, l2dofs_cnt, l2_stress_dofs_cnt, h1dofs_cnt, source_type;
    const double cfl;
    const bool use_viscosity, use_vorticity, p_assembly;
    const double cg_rel_tol;
@@ -155,11 +142,6 @@ protected:
    const ParGridFunction &gamma_gf;
    const ParGridFunction &lambda_gf;
    const ParGridFunction &mu_gf;
-   // ParGridFunction &sigma_gf; // new member of stress tensor
-   Vector &old_stress;
-   Vector &inc_stress;
-   Vector &cur_spin;
-   Vector &old_spin;
    // Velocity mass matrix and local inverses of the energy mass matrices. These
    // are constant in time, due to the pointwise mass conservation property.
    mutable ParBilinearForm Mv;
@@ -179,7 +161,6 @@ protected:
    mutable MixedBilinearForm Force;
    // G matrix is in thermodynamic spaces.
    mutable LinearForm Body_Force;
-   // mutable MixedBilinearForm Sigma;
    // Same as above, but done through partial assembly.
    ForcePAOperator *ForcePA;
    ForcePAOperator *SigmaPA;
@@ -191,8 +172,7 @@ protected:
    CGSolver CG_VMass, CG_EMass;
    mutable TimingData timer;
    mutable QUpdate *qupdate;
-   mutable Vector X, B, one, rhs, e_rhs, sig_rhs, sig_one;
-   // mutable Vector body_force;
+   mutable Vector X, B, one, rhs, e_rhs;
    mutable ParGridFunction rhs_c_gf, dvc_gf;
    mutable Array<int> c_tdofs[3];
 
@@ -217,10 +197,10 @@ protected:
    void AssembleSigmaMatrix() const;
 
 public:
-   LagrangianHydroOperator(const int size,
+   LagrangianGeoOperator(const int size,
                            ParFiniteElementSpace &h1_fes,
                            ParFiniteElementSpace &l2_fes,
-                           ParFiniteElementSpace &l2_2_fes,
+                           ParFiniteElementSpace &l2_stress_fes,
                            const Array<int> &ess_tdofs,
                            Coefficient &rho0_coeff,
                            Coefficient &scale_rho0_coeff,
@@ -230,9 +210,10 @@ public:
                            const double cfl,
                            const bool visc, const bool vort, const bool pa,
                            const double cgt, const int cgiter, double ftz_tol,
-                           const int order_q, Vector &old_stress, Vector &inc_stress, Vector &cur_spin, Vector &old_spin,
+                           const int order_q,
                            ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity);
-   ~LagrangianHydroOperator();
+   ~LagrangianGeoOperator();
+
 
    // Solve for dx_dt, dv_dt and de_dt.
    // virtual void Mult(const Vector &S, Vector &dS_dt) const;
@@ -297,20 +278,20 @@ public:
    }
 };
 
-} // namespace hydrodynamics
+} // namespace geodynamics
 
-class HydroODESolver : public ODESolver
+class GeoODESolver : public ODESolver
 {
 protected:
-   hydrodynamics::LagrangianHydroOperator *hydro_oper;
+   geodynamics::LagrangianGeoOperator *geo_oper;
 public:
-   HydroODESolver() : hydro_oper(NULL) { }
+   GeoODESolver() : geo_oper(NULL) { }
    virtual void Init(TimeDependentOperator&);
    virtual void Step(Vector&, double&, double&)
    { MFEM_ABORT("Time stepping is undefined."); }
 };
 
-class RK2AvgSolver : public HydroODESolver
+class RK2AvgSolver : public GeoODESolver
 {
 protected:
    Vector V;

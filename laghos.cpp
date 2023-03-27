@@ -21,7 +21,7 @@
 //                 /_____/\__,_/\__, /_/ /_/\____/____/
 //                             /____/
 //
-//             High-order Lagrangian Hydrodynamics Miniapp
+//             High-order Lagrangian Geodynamics Solver
 //
 // Laghos(LAGrangian High-Order Solver) is a miniapp that solves the
 // time-dependent Euler equation of compressible gas dynamics in a moving
@@ -30,7 +30,7 @@
 // numerical algorithm described in the following article:
 //
 //    V. Dobrev, Tz. Kolev and R. Rieben, "High-order curvilinear finite element
-//    methods for Lagrangian hydrodynamics", SIAM Journal on Scientific
+//    methods for Lagrangian geodynamics", SIAM Journal on Scientific
 //    Computing, (34) 2012, pp. B606–B641, https://doi.org/10.1137/120864672.
 //
 // Test problems:
@@ -78,8 +78,6 @@ double e0(const Vector &);
 double rho0(const Vector &);
 double gamma_func(const Vector &);
 void v0(const Vector &, Vector &);
-void u0(const Vector &, Vector &);
-void f_exact(const Vector &, Vector &);
 
 static long GetMaxRssMB();
 static void display_banner(std::ostream&);
@@ -106,23 +104,16 @@ public:
    sigma.Diag(2*eps.Trace()/3, eps.Size()); // sigma = lambda*trace(eps)*I
    sigma.Add(2, eps);          // sigma += 2*mu*eps
    
-   K.SetSize(dim*dim);
+   K.SetSize(3*(dim-1));
    if(dim ==2)
    {
-      K(0)=sigma(0,0); K(1)=sigma(0,1); 
-      K(2)=sigma(1,0); K(3)=sigma(1,1);
+      K(0)=sigma(0,0); K(1)=sigma(1,1); K(2)=sigma(0,1);
    }
    else if(dim ==3)
    {
-      K(0)=1; K(1)=2; K(2)=3;
-      K(3)=4; K(4)=5; K(5)=6;
-      K(6)=7; K(7)=8; K(8)=9;
-
-      // K(0)=sigma(0,0); K(1)=sigma(0,1); K(2)=sigma(0,2);
-      // K(3)=sigma(1,0); K(4)=sigma(1,1); K(5)=sigma(1,2);
-      // K(6)=sigma(2,0); K(7)=sigma(2,1); K(8)=sigma(2,2);
+      K(0)=sigma(0,0); K(1)=sigma(1,1); K(2)=sigma(2,2);
+      K(3)=sigma(0,1); K(4)=sigma(0,2); K(5)=sigma(1,2);
    }
-   
    }
 
    virtual ~StressCoefficient() { }
@@ -158,7 +149,7 @@ int main(int argc, char *argv[])
    bool p_assembly = false;
    bool impose_visc = true;
    bool visualization = false;
-   int vis_steps = 100;
+   int vis_steps = 1000;
    bool visit = false;
    bool paraview = true;
    bool gfprint = false;
@@ -261,9 +252,11 @@ int main(int argc, char *argv[])
       return 1;
    }
    if (mpi.Root()) { args.PrintOptions(cout); }
-
    
-   
+   if(max_tsteps > -1)
+   {
+      t_final = 1.0e38;
+   }   
    if(year)
    {
       t_final = t_final * 86400 * 365.25;
@@ -295,9 +288,7 @@ int main(int argc, char *argv[])
 
    if (strncmp(mesh_file, "default", 7) != 0)
    {
-      // cout << "Reading mesh" << endl;
       mesh = new Mesh(mesh_file, true, true);
-      // cout << "Done reading mesh" << endl;
    }
    else
    {
@@ -499,28 +490,51 @@ int main(int argc, char *argv[])
    H1_FECollection H1FEC(order_v, dim);
    ParFiniteElementSpace L2FESpace(pmesh, &L2FEC);
    ParFiniteElementSpace H1FESpace(pmesh, &H1FEC, pmesh->Dimension());
-   ParFiniteElementSpace L2FESpace_2(pmesh, &L2FEC, dim*dim); // three varibles for 2D, six varibles for 3D
-
-   // if(myid == 0){std::cout << pmesh->GetNSharedFaces()  <<std::endl;}
-   // if(myid == 0){std::cout << pmesh->GetVertices()  <<std::endl;}
+   ParFiniteElementSpace L2FESpace_stress(pmesh, &L2FEC, 3*(dim-1)); // three varibles for 2D, six varibles for 3D
    
    // Boundary conditions: all tests use v.n = 0 on the boundary, and we assume
    // that the boundaries are straight.
    Array<int> ess_tdofs, ess_vdofs;
    {
       Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
+      /*
       ess_bdr = 0; ess_bdr[0] = 1; 
-      // ess_bdr[1] = 1;
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
 
-      ess_bdr = 0; ess_bdr[2] = 1;
+      ess_bdr = 0; ess_bdr[2] = 1; ess_bdr[2] = 1;
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+      */
+      
+      // Cube problem
+      // x compoent is constained in left and right sides 
+      ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+
+      // Bottom is fixed
+      ess_bdr = 0; ess_bdr[2] = 1; 
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
+      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      ess_vdofs.Append(dofs_list);
+
+      // y compoent is constained in left and right sides 
+      ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
+      ess_tdofs.Append(dofs_list);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
    }
@@ -569,7 +583,7 @@ int main(int argc, char *argv[])
    offset[1] = offset[0] + Vsize_h1;
    offset[2] = offset[1] + Vsize_h1;
    offset[3] = offset[2] + Vsize_l2;
-   offset[4] = offset[3] + Vsize_l2*dim*dim;
+   offset[4] = offset[3] + Vsize_l2*3*(dim-1);
    // offset[5] = offset[4] + Vsize_h1;
    BlockVector S(offset, Device::GetMemoryType());
 
@@ -577,12 +591,11 @@ int main(int argc, char *argv[])
    // internal energy. There is no function for the density, as we can always
    // compute the density values given the current mesh position, using the
    // property of pointwise mass conservation.
-   // ParGridFunction x_gf, v_gf, e_gf; //ParGridFunction x_gf, v_gf, e_gf;
    ParGridFunction x_gf, v_gf, e_gf, s_gf;
    x_gf.MakeRef(&H1FESpace, S, offset[0]);
    v_gf.MakeRef(&H1FESpace, S, offset[1]);
    e_gf.MakeRef(&L2FESpace, S, offset[2]);
-   s_gf.MakeRef(&L2FESpace_2, S, offset[3]);
+   s_gf.MakeRef(&L2FESpace_stress, S, offset[3]);
 
    // Initialize x_gf using the starting mesh coordinates.
    pmesh->SetNodalGridFunction(&x_gf);
@@ -687,10 +700,6 @@ int main(int argc, char *argv[])
    s_gf=0.0;
    s_gf.SyncAliasMemory(S);
 
-   ParGridFunction test_gf(&L2FESpace_2); 
-   test_gf.ProjectCoefficient(stress_coef);
-
-
    ParGridFunction u_gf(&H1FESpace);  // Displacment
    ParGridFunction x0_gf(&H1FESpace); // Initial mesh (reference configuration)
    // Initialize x_gf using the starting mesh coordinates.
@@ -715,21 +724,6 @@ int main(int argc, char *argv[])
    sigma_gf.ProjectCoefficient(stress_coef);
    */
 
-
-   // Vectors for stress and spin rate at quardracture points
-   const IntegrationRule &irs = IntRules.Get(pmesh->GetElementBaseGeometry(0), \
-   ((order_q > 0) ? order_q : 3 * H1FESpace.GetOrder(0) + L2FESpace.GetOrder(0) - 1));
-
-   Vector old_stress(NE*irs.GetNPoints()*dim*dim); // vector for previous stress at values at quardrature points
-   Vector inc_stress(NE*irs.GetNPoints()*dim*dim); // vector for previous stress at values at quardrature points
-   Vector cur_spin(NE*irs.GetNPoints()*dim*dim); // vector for current (temporal) spin rate at values at quardrature points
-   Vector old_spin(NE*irs.GetNPoints()*dim*dim); // vector for previous spin rate at values at quardrature points
-   // old_stress=0.0;
-   old_stress=1.0;
-   inc_stress=0.0;
-   cur_spin=0.0;
-   old_spin=0.0;
-
    // Additional details, depending on the problem.
    int source = 0; bool visc = false, vorticity = false;
    switch (problem)
@@ -746,22 +740,22 @@ int main(int argc, char *argv[])
    }
    if (impose_visc) { visc = true; }
 
-   hydrodynamics::LagrangianHydroOperator hydro(S.Size(),
-                                                H1FESpace, L2FESpace, L2FESpace_2, ess_tdofs,
+   geodynamics::LagrangianGeoOperator geo(S.Size(),
+                                                H1FESpace, L2FESpace, L2FESpace_stress, ess_tdofs,
                                                 rho0_coeff, scale_rho0_coeff, rho0_gf,
                                                 mat_gf, source, cfl,
                                                 visc, vorticity, p_assembly,
                                                 cg_tol, cg_max_iter, ftz_tol,
-                                                order_q, old_stress, inc_stress, cur_spin, old_spin, lambda0_gf, mu0_gf, mscale, gravity);
+                                                order_q, lambda0_gf, mu0_gf, mscale, gravity);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
    int  visport   = 19916;
 
    ParGridFunction rho_gf;
-   if (visualization || visit || paraview) { hydro.ComputeDensity(rho_gf); }
-   const double energy_init = hydro.InternalEnergy(e_gf) +
-                              hydro.KineticEnergy(v_gf);
+   if (visualization || visit || paraview) { geo.ComputeDensity(rho_gf); }
+   const double energy_init = geo.InternalEnergy(e_gf) +
+                              geo.KineticEnergy(v_gf);
 
    if (visualization)
    {
@@ -776,14 +770,14 @@ int main(int argc, char *argv[])
       int offx = Ww+10; // window offsets
       if (problem != 0 && problem != 4)
       {
-         hydrodynamics::VisualizeField(vis_rho, vishost, visport, rho_gf,
+         geodynamics::VisualizeField(vis_rho, vishost, visport, rho_gf,
                                        "Density", Wx, Wy, Ww, Wh);
       }
       Wx += offx;
-      hydrodynamics::VisualizeField(vis_v, vishost, visport, v_gf,
+      geodynamics::VisualizeField(vis_v, vishost, visport, v_gf,
                                     "Velocity", Wx, Wy, Ww, Wh);
       Wx += offx;
-      hydrodynamics::VisualizeField(vis_e, vishost, visport, e_gf,
+      geodynamics::VisualizeField(vis_e, vishost, visport, e_gf,
                                     "Specific Internal Energy", Wx, Wy, Ww, Wh);
    }
 
@@ -812,8 +806,8 @@ int main(int argc, char *argv[])
       pd->RegisterField("Specific Internal Energy", &e_gf);
       pd->RegisterField("stress", &s_gf);
       // pd->SetLevelsOfDetail(order);
-      // pd->SetDataFormat(VTKFormat::BINARY);
-      pd->SetDataFormat(VTKFormat::ASCII);
+      pd->SetDataFormat(VTKFormat::BINARY);
+      // pd->SetDataFormat(VTKFormat::ASCII);
       pd->SetHighOrderOutput(true);
       pd->SetCycle(0);
       pd->SetTime(0.0);
@@ -821,12 +815,12 @@ int main(int argc, char *argv[])
    }
 
    // Perform time-integration (looping over the time iterations, ti, with a
-   // time-step dt). The object oper is of type LagrangianHydroOperator that
+   // time-step dt). The object oper is of type LagrangianGeoOperator that
    // defines the Mult() method that used by the time integrators.
-   ode_solver->Init(hydro);
-   hydro.ResetTimeStepEstimate();
+   ode_solver->Init(geo);
+   geo.ResetTimeStepEstimate();
    double t = 0.0, dt = 0.0, t_old;
-   dt = hydro.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
+   dt = geo.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
    
    // dt = init_dt;
    bool last_step = false;
@@ -834,8 +828,8 @@ int main(int argc, char *argv[])
    BlockVector S_old(S);
    long mem=0, mmax=0, msum=0;
    int checks = 0;
-   //   const double internal_energy = hydro.InternalEnergy(e_gf);
-   //   const double kinetic_energy = hydro.KineticEnergy(v_gf);
+   //   const double internal_energy = geo.InternalEnergy(e_gf);
+   //   const double kinetic_energy = geo.KineticEnergy(v_gf);
    //   if (mpi.Root())
    //   {
    //      cout << std::fixed;
@@ -872,7 +866,7 @@ int main(int argc, char *argv[])
       if (steps == max_tsteps) { last_step = true; }
       S_old = S;
       t_old = t;
-      hydro.ResetTimeStepEstimate();
+      geo.ResetTimeStepEstimate();
 
       // S is the vector of dofs, t is the current time, and dt is the time step
       // to advance.
@@ -880,9 +874,9 @@ int main(int argc, char *argv[])
       steps++;
 
       // Adaptive time step control.
-      const double dt_est = hydro.GetTimeStepEstimate(S, dt);
-      // const double dt_est = hydro.GetTimeStepEstimate(S, dt, mpi.Root());
-      // const double dt_est = hydro.GetTimeStepEstimate(S);
+      const double dt_est = geo.GetTimeStepEstimate(S, dt);
+      // const double dt_est = geo.GetTimeStepEstimate(S, dt, mpi.Root());
+      // const double dt_est = geo.GetTimeStepEstimate(S);
       if (dt_est < dt)
       {
          // Repeat (solve again) with a decreased time step - decrease of the
@@ -892,7 +886,7 @@ int main(int argc, char *argv[])
          { MFEM_ABORT("The time step crashed!"); }
          t = t_old;
          S = S_old;
-         hydro.ResetQuadratureData();
+         geo.ResetQuadratureData();
          // if (mpi.Root()) { cout << "Repeating step " << ti << endl; }
          if (steps < max_tsteps) { last_step = false; }
          ti--; continue;
@@ -907,14 +901,7 @@ int main(int argc, char *argv[])
       e_gf.SyncAliasMemory(S);
       s_gf.SyncAliasMemory(S);
 
-
-      test_gf.ProjectCoefficient(stress_coef); // this is stress to debug 
-
       // Adding stress increment to total stress and storing spin rate
-
-      // inc_stress.Add(1.0, old_stress);
-      // old_spin.Set(1.0, cur_spin);
-
       // Make sure that the mesh corresponds to the new solution state. This is
       // needed, because some time integrators use different S-type vectors
       // and the oper object might have redirected the mesh positions to those.
@@ -923,7 +910,7 @@ int main(int argc, char *argv[])
       u_gf -= x_gf;
       u_gf.Neg();
 
-      // hydro.ComputeDensity(rho_gf);
+      // geo.ComputeDensity(rho_gf);
       
 
       if (last_step || (ti % vis_steps) == 0)
@@ -936,8 +923,8 @@ int main(int argc, char *argv[])
             MPI_Reduce(&mem, &mmax, 1, MPI_LONG, MPI_MAX, 0, pmesh->GetComm());
             MPI_Reduce(&mem, &msum, 1, MPI_LONG, MPI_SUM, 0, pmesh->GetComm());
          }
-         const double internal_energy = hydro.InternalEnergy(e_gf);
-         const double kinetic_energy = hydro.KineticEnergy(v_gf);
+         const double internal_energy = geo.InternalEnergy(e_gf);
+         const double kinetic_energy = geo.KineticEnergy(v_gf);
          if(year)
          {
             if (mpi.Root())
@@ -946,9 +933,6 @@ int main(int argc, char *argv[])
 
             cout << std::fixed;
             cout << "step " << std::setw(5) << ti
-               //   << ",\th_min = " << std::setw(5) << std::setprecision(4) << old_stress[0]
-               //   << ",\tp_wave = " << std::setw(5) << std::setprecision(4) << old_stress[1]
-               //   << ",\tsmooth = " << std::setw(5) << std::setprecision(4) << old_stress[2]
                  << ",\tt = " << std::setw(5) << std::setprecision(4) << t/86400/365.25
                  << ",\tdt = " << std::setw(5) << std::setprecision(6) << std::scientific << dt/86400/365.25
                  << ",\t|e| = " << std::setprecision(10) << std::scientific
@@ -975,9 +959,6 @@ int main(int argc, char *argv[])
 
             cout << std::fixed;
             cout << "step " << std::setw(5) << ti
-               //   << ",\th_min = " << std::setw(5) << std::setprecision(4) << old_stress[0]
-               //   << ",\tp_wave = " << std::setw(5) << std::setprecision(4) << old_stress[1]
-               //   << ",\tsmooth = " << std::setw(5) << std::setprecision(4) << old_stress[2]
                  << ",\tt = " << std::setw(5) << std::setprecision(4) << t
                  << ",\tdt = " << std::setw(5) << std::setprecision(6) << dt
                  << ",\t|e| = " << std::setprecision(10) << std::scientific
@@ -1001,7 +982,7 @@ int main(int argc, char *argv[])
          // another set of GLVis connections (one from each rank):
          MPI_Barrier(pmesh->GetComm());
 
-         if (visualization || visit || gfprint || paraview) { hydro.ComputeDensity(rho_gf); }
+         if (visualization || visit || gfprint || paraview) { geo.ComputeDensity(rho_gf); }
          if (visualization)
          {
             int Wx = 0, Wy = 0; // window position
@@ -1009,14 +990,14 @@ int main(int argc, char *argv[])
             int offx = Ww+10; // window offsets
             if (problem != 0 && problem != 4)
             {
-               hydrodynamics::VisualizeField(vis_rho, vishost, visport, rho_gf,
+               geodynamics::VisualizeField(vis_rho, vishost, visport, rho_gf,
                                              "Density", Wx, Wy, Ww, Wh);
             }
             Wx += offx;
-            hydrodynamics::VisualizeField(vis_v, vishost, visport,
+            geodynamics::VisualizeField(vis_v, vishost, visport,
                                           v_gf, "Velocity", Wx, Wy, Ww, Wh);
             Wx += offx;
-            hydrodynamics::VisualizeField(vis_e, vishost, visport, e_gf,
+            geodynamics::VisualizeField(vis_e, vishost, visport, e_gf,
                                           "Specific Internal Energy",
                                           Wx, Wy, Ww,Wh);
             Wx += offx;
@@ -1094,7 +1075,7 @@ int main(int argc, char *argv[])
       case 7: steps *= 2;
    }
 
-   hydro.PrintTimingData(mpi.Root(), steps, fom);
+   geo.PrintTimingData(mpi.Root(), steps, fom);
 
    if (mem_usage)
    {
@@ -1103,8 +1084,8 @@ int main(int argc, char *argv[])
       MPI_Reduce(&mem, &msum, 1, MPI_LONG, MPI_SUM, 0, pmesh->GetComm());
    }
 
-   const double energy_final = hydro.InternalEnergy(e_gf) +
-                               hydro.KineticEnergy(v_gf);
+   const double energy_final = geo.InternalEnergy(e_gf) +
+                               geo.KineticEnergy(v_gf);
    if (mpi.Root())
    {
       cout << endl;
@@ -1147,247 +1128,31 @@ int main(int argc, char *argv[])
 
 double rho0(const Vector &x)
 {
-   switch (problem)
-   {
-      case 0: return 1.0;
-      case 1: return 1.0;
-      // case 1: return 2800;
-      case 2: return (x(0) < 0.5) ? 1.0 : 0.1;
-      case 3: return (dim == 2) ? (x(0) > 1.0 && x(1) > 1.5) ? 0.125 : 1.0
-                        : x(0) > 1.0 && ((x(1) < 1.5 && x(2) < 1.5) ||
-                                         (x(1) > 1.5 && x(2) > 1.5)) ? 0.125 : 1.0;
-      case 4: return 1.0;
-      case 5:
-      {
-         if (x(0) >= 0.5 && x(1) >= 0.5) { return 0.5313; }
-         if (x(0) <  0.5 && x(1) <  0.5) { return 0.8; }
-         return 1.0;
-      }
-      case 6:
-      {
-         if (x(0) <  0.5 && x(1) >= 0.5) { return 2.0; }
-         if (x(0) >= 0.5 && x(1) <  0.5) { return 3.0; }
-         return 1.0;
-      }
-      case 7: return x(1) >= 0.0 ? 2.0 : 1.0;
-      default: MFEM_ABORT("Bad number given for problem id!"); return 0.0;
-   }
+   return 2800.0; // This case in initialized in main().
 }
 
 double gamma_func(const Vector &x)
 {
-   switch (problem)
-   {
-      case 0: return 5.0 / 3.0;
-      case 1: return 1.4;
-      case 2: return 1.4;
-      case 3:
-         if (dim == 1) { return (x(0) > 0.5) ? 1.4 : 1.5; }
-         else { return (x(0) > 1.0 && x(1) <= 1.5) ? 1.4 : 1.5; }
-      case 4: return 5.0 / 3.0;
-      case 5: return 1.4;
-      case 6: return 1.4;
-      case 7: return 5.0 / 3.0;
-      default: MFEM_ABORT("Bad number given for problem id!"); return 0.0;
-   }
+   return 1.0; // This case in initialized in main().
 }
 
 static double rad(double x, double y) { return sqrt(x*x + y*y); }
-
-void f_exact(const Vector &x, Vector &f)
-{
-   if (dim == 3)
-   {
-      f(0) = 1;
-      f(1) = 2;
-      f(2) = 3;
-   }
-   else
-   {
-      f(0) = 1;
-      f(1) = 2;
-   }
-}
-
-void u0(const Vector &x, Vector &v)
-{
-   if (x.Size() == 2)
-   {
-      v(0) =  0.0; v(1) =  0.0;
-   }
-   else if (x.Size() == 3)
-   {
-      v(0) =  0.0; v(1) =  0.0; v(2) =  0.0;
-   }
-   
-}
 
 void v0(const Vector &x, Vector &v)
 {
    const double atn = dim!=1 ? pow((x(0)*(1.0-x(0))*4*x(1)*(1.0-x(1))*4.0),
                                    0.4) : 0.0;
    const double s = 0.1/64.;
-   switch (problem)
+   v = 0.0;
+   if(x(0) == 8)
    {
-      case 0:
-         v(0) =  sin(M_PI*x(0)) * cos(M_PI*x(1));
-         v(1) = -cos(M_PI*x(0)) * sin(M_PI*x(1));
-         if (x.Size() == 3)
-         {
-            v(0) *= cos(M_PI*x(2));
-            v(1) *= cos(M_PI*x(2));
-            v(2) = 0.0;
-         }
-         break;
-      case 1: 
-         v = 0.0;
-         // v(dim-1) = -s*x(0)*x(0);
-         // v(dim-1) = -s*exp(-1*(x(0)-4.0)*(x(0)-4.0)/2/1);
-         // v(dim-1) = s*x(0)*x(0)*(8.0-x(0));
-         // v(0) = -s*x(0)*x(0);
-         
-         if(x(0) == 0)
-         {
-            // v = 0.0;
-            // v(0)=-0.01;
-            // v(1)=-0.01;
-         }
-
-         // if(x(0) == 80e3)
-         if(x(0) == 8)
-         {
-            // v(1)=-1e-1;
-            // if(dim == 3){v(2)=-0.01;}
-            // else if(dim == 2){v(1)=-0.01;}
-            // else if(dim == 2){v(1)=-0.1/86400/365.25;}
-            
-            // else if(dim == 2){v(1)=-0.1;}
-            // v = 0.0;
-            // v(0)=-0.01;
-            // v(1)=-0.1/86400/365.25; // 0.1 mm/yr
-         } 
-         if(x(0) == 8)
-         {
-            v(1)=-5e-2;
-         }
-
-         break;
-      case 2: v = 0.0; break;
-      case 3: v = 0.0; break;
-      case 4:
-      {
-         v = 0.0;
-         const double r = rad(x(0), x(1));
-         if (r < 0.2)
-         {
-            v(0) =  5.0 * x(1);
-            v(1) = -5.0 * x(0);
-         }
-         else if (r < 0.4)
-         {
-            v(0) =  2.0 * x(1) / r - 5.0 * x(1);
-            v(1) = -2.0 * x(0) / r + 5.0 * x(0);
-         }
-         else { }
-         break;
-      }
-      case 5:
-      {
-         v = 0.0;
-         if (x(0) >= 0.5 && x(1) >= 0.5) { v(0)=0.0*atn, v(1)=0.0*atn; return;}
-         if (x(0) <  0.5 && x(1) >= 0.5) { v(0)=0.7276*atn, v(1)=0.0*atn; return;}
-         if (x(0) <  0.5 && x(1) <  0.5) { v(0)=0.0*atn, v(1)=0.0*atn; return;}
-         if (x(0) >= 0.5 && x(1) <  0.5) { v(0)=0.0*atn, v(1)=0.7276*atn; return; }
-         MFEM_ABORT("Error in problem 5!");
-         return;
-      }
-      case 6:
-      {
-         v = 0.0;
-         if (x(0) >= 0.5 && x(1) >= 0.5) { v(0)=+0.75*atn, v(1)=-0.5*atn; return;}
-         if (x(0) <  0.5 && x(1) >= 0.5) { v(0)=+0.75*atn, v(1)=+0.5*atn; return;}
-         if (x(0) <  0.5 && x(1) <  0.5) { v(0)=-0.75*atn, v(1)=+0.5*atn; return;}
-         if (x(0) >= 0.5 && x(1) <  0.5) { v(0)=-0.75*atn, v(1)=-0.5*atn; return;}
-         MFEM_ABORT("Error in problem 6!");
-         return;
-      }
-      case 7:
-      {
-         v = 0.0;
-         v(1) = 0.02 * exp(-2*M_PI*x(1)*x(1)) * cos(2*M_PI*x(0));
-         break;
-      }
-      default: MFEM_ABORT("Bad number given for problem id!");
-   }
+      // v(1)=-1e-1;
+   } 
 }
 
 double e0(const Vector &x)
 {
-   switch (problem)
-   {
-      case 0:
-      {
-         const double denom = 2.0 / 3.0;  // (5/3 - 1) * density.
-         double val;
-         if (x.Size() == 2)
-         {
-            val = 1.0 + (cos(2*M_PI*x(0)) + cos(2*M_PI*x(1))) / 4.0;
-         }
-         else
-         {
-            val = 100.0 + ((cos(2*M_PI*x(2)) + 2) *
-                           (cos(2*M_PI*x(0)) + cos(2*M_PI*x(1))) - 2) / 16.0;
-         }
-         return val/denom;
-      }
-      case 1: return 0.0; // This case in initialized in main().
-      case 2: return (x(0) < 0.5) ? 1.0 / rho0(x) / (gamma_func(x) - 1.0)
-                        : 0.1 / rho0(x) / (gamma_func(x) - 1.0);
-      case 3: return (x(0) > 1.0) ? 0.1 / rho0(x) / (gamma_func(x) - 1.0)
-                        : 1.0 / rho0(x) / (gamma_func(x) - 1.0);
-      case 4:
-      {
-         const double r = rad(x(0), x(1)), rsq = x(0) * x(0) + x(1) * x(1);
-         const double gamma = 5.0 / 3.0;
-         if (r < 0.2)
-         {
-            return (5.0 + 25.0 / 2.0 * rsq) / (gamma - 1.0);
-         }
-         else if (r < 0.4)
-         {
-            const double t1 = 9.0 - 4.0 * log(0.2) + 25.0 / 2.0 * rsq;
-            const double t2 = 20.0 * r - 4.0 * log(r);
-            return (t1 - t2) / (gamma - 1.0);
-         }
-         else { return (3.0 + 4.0 * log(2.0)) / (gamma - 1.0); }
-      }
-      case 5:
-      {
-         const double irg = 1.0 / rho0(x) / (gamma_func(x) - 1.0);
-         if (x(0) >= 0.5 && x(1) >= 0.5) { return 0.4 * irg; }
-         if (x(0) <  0.5 && x(1) >= 0.5) { return 1.0 * irg; }
-         if (x(0) <  0.5 && x(1) <  0.5) { return 1.0 * irg; }
-         if (x(0) >= 0.5 && x(1) <  0.5) { return 1.0 * irg; }
-         MFEM_ABORT("Error in problem 5!");
-         return 0.0;
-      }
-      case 6:
-      {
-         const double irg = 1.0 / rho0(x) / (gamma_func(x) - 1.0);
-         if (x(0) >= 0.5 && x(1) >= 0.5) { return 1.0 * irg; }
-         if (x(0) <  0.5 && x(1) >= 0.5) { return 1.0 * irg; }
-         if (x(0) <  0.5 && x(1) <  0.5) { return 1.0 * irg; }
-         if (x(0) >= 0.5 && x(1) <  0.5) { return 1.0 * irg; }
-         MFEM_ABORT("Error in problem 6!");
-         return 0.0;
-      }
-      case 7:
-      {
-         const double rho = rho0(x), gamma = gamma_func(x);
-         return (6.0 - rho * x(1)) / (gamma - 1.0) / rho;
-      }
-      default: MFEM_ABORT("Bad number given for problem id!"); return 0.0;
-   }
+   return 0.0; // This case in initialized in main().
 }
 
 static void display_banner(std::ostream &os)

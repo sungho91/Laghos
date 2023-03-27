@@ -20,7 +20,7 @@
 namespace mfem
 {
 
-namespace hydrodynamics
+namespace geodynamics
 {
 
 void DensityIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
@@ -49,15 +49,15 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
    const int nqp = IntRule->GetNPoints();
    const int e = Tr.ElementNo;
    const int dim = fe.GetDim();
-   const int dim2 = dim*dim;
+   const int dim2 = 3*(dim-1);
    const int num = fe.GetDof(); 
 
    Vector shape(fe.GetDof());
    elvect.SetSize(fe.GetDof()*dim2);
    elvect = 0.0;
    double sxx{0.0}, sxy{0.0}, sxz{0.0};
-   double syx{0.0}, syy{0.0}, syz{0.0};
-   double szx{0.0}, szy{0.0}, szz{0.0};
+   double syy{0.0}, syz{0.0};
+   double szz{0.0};
 
    if(dim == 2)
    {
@@ -68,15 +68,13 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
          const int eq = e*nqp + q; // quardature point
          sxx = qdata.tauJinvT(0)(eq, 0);
          sxy = qdata.tauJinvT(0)(eq, 1);
-         syx = qdata.tauJinvT(1)(eq, 0);
          syy = qdata.tauJinvT(1)(eq, 1);
 
          for (int i = 0; i < num; i++)
          {
            elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
-           elvect[i+num*1] = elvect[i+num*1] + shape[i]*sxy;
+           elvect[i+num*1] = elvect[i+num*1] + shape[i]*syy;
            elvect[i+num*2] = elvect[i+num*2] + shape[i]*sxy;
-           elvect[i+num*3] = elvect[i+num*3] + shape[i]*syy;
          }
       }
    }
@@ -92,82 +90,30 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
          sxx = qdata.tauJinvT(0)(eq, 0);
          sxy = qdata.tauJinvT(0)(eq, 1);
          sxz = qdata.tauJinvT(0)(eq, 2);
-         syx = qdata.tauJinvT(1)(eq, 0);
          syy = qdata.tauJinvT(1)(eq, 1);
          syz = qdata.tauJinvT(1)(eq, 2);
-         szx = qdata.tauJinvT(2)(eq, 0);
-         szy = qdata.tauJinvT(2)(eq, 1);
          szz = qdata.tauJinvT(2)(eq, 2);
+
+         // syx = qdata.tauJinvT(1)(eq, 0);
+         // szx = qdata.tauJinvT(2)(eq, 0);
+         // szy = qdata.tauJinvT(2)(eq, 1);
 
          
          for (int i = 0; i < num; i++)
          {
            elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
-           elvect[i+num*1] = elvect[i+num*1] + shape[i]*sxy;
-           elvect[i+num*2] = elvect[i+num*2] + shape[i]*sxz;
+           elvect[i+num*1] = elvect[i+num*1] + shape[i]*syy;
+           elvect[i+num*2] = elvect[i+num*2] + shape[i]*szz;
            elvect[i+num*3] = elvect[i+num*3] + shape[i]*sxy;
-           elvect[i+num*4] = elvect[i+num*4] + shape[i]*syy;
+           elvect[i+num*4] = elvect[i+num*4] + shape[i]*sxz;
            elvect[i+num*5] = elvect[i+num*5] + shape[i]*syz;
-           elvect[i+num*6] = elvect[i+num*6] + shape[i]*sxz;
-           elvect[i+num*7] = elvect[i+num*7] + shape[i]*syz;
-           elvect[i+num*8] = elvect[i+num*8] + shape[i]*szz;
+         //   elvect[i+num*6] = elvect[i+num*6] + shape[i]*sxz;
+         //   elvect[i+num*7] = elvect[i+num*7] + shape[i]*syz;
+         //   elvect[i+num*8] = elvect[i+num*8] + shape[i]*szz;
          }
       }
    }
 }
-
-/*
-void SigmaIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
-                                             const FiniteElement &test_fe,
-                                             ElementTransformation &Tr,
-                                             DenseMatrix &elmat)
-{
-   const int e = Tr.ElementNo;
-   const int nqp = IntRule->GetNPoints();
-   const int dim = trial_fe.GetDim();
-   const int h1dofs_cnt = test_fe.GetDof();
-   const int l2dofs_cnt = trial_fe.GetDof();
-   elmat.SetSize(1, l2dofs_cnt*dim*dim);
-   elmat = 0.0;
-   
-   DenseMatrix shape(l2dofs_cnt, dim*dim),loc_force(l2dofs_cnt, dim*dim);
-   Vector Vloc_force(loc_force.Data(), l2dofs_cnt*dim*dim);
-   loc_force = 0.0;
-
-   for (int q = 0; q < nqp; q++)
-   {
-      const IntegrationPoint &ip = IntRule->IntPoint(q);
-      trial_fe.CalcDShape(ip, shape);
-      for (int i = 0; i < l2dofs_cnt; i++)
-      {
-         for (int vd = 0; vd < dim; vd++) // Velocity components.
-         {
-            for (int gd = 0; gd < dim; gd++) // Gradient components.
-            {
-               const int eq = e*nqp + q; // quardature point
-               const int offset = gd + vd*dim;
-               
-               const double tauJinvT = qdata.tauJinvT(vd)(eq, gd);
-               // loc_force(i, offset) +=  tauJinvT;
-               loc_force(i, offset) =  offset * vshape(i,offset);
-   
-
-               // if(e==1)
-               // {
-               //    std::cout << e <<" "<< vd <<" "<< gd <<" " << eq << " "<<offset<<std::endl;
-               // }
-               // loc_force(i, vd) +=  tauJinvT * vshape(i,gd);
-            }
-         }
-      }
-      // trial_fe.CalcShape(ip, shape);
-      // AddMultVWt(loc_force, shape, elmat);
-      // AddMultVWt(Vloc_force, shape, elmat);
-   }
-
-   
-}
-*/
 
 void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
                                              const FiniteElement &test_fe,
@@ -200,8 +146,6 @@ void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
                const int eq = e*nqp + q;
                const double stressJinvT = qdata.stressJinvT(vd)(eq, gd);
                loc_force(i, vd) +=  stressJinvT * vshape(i,gd);
-               // if((q == 0) & (i == 0) & (vd == 0) & (gd == 0)){std::cout << e << " , " << eq <<std::endl;}
-
             }
          }
       }
@@ -1157,6 +1101,6 @@ void ForcePAOperator::MultTranspose(const Vector &x, Vector &y) const
    else { y = X; }
 }
 
-} // namespace hydrodynamics
+} // namespace geodynamics
 
 } // namespace mfem

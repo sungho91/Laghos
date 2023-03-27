@@ -24,7 +24,7 @@
 namespace mfem
 {
 
-namespace hydrodynamics
+namespace geodynamics
 {
 
 // Container for all data needed at quadrature points.
@@ -76,7 +76,7 @@ struct QuadratureData
 };
 
 // This class is used only for visualization. It assembles (rho, phi) in each
-// zone, which is used by LagrangianHydroOperator::ComputeDensity to do an L2
+// zone, which is used by LagrangianGeoOperator::ComputeDensity to do an L2
 // projection of the density.
 class DensityIntegrator : public LinearFormIntegrator
 {
@@ -185,7 +185,7 @@ public:
    const ParBilinearForm &GetBF() const { return pabf; }
 };
 
-} // namespace hydrodynamics
+} // namespace geodynamics
 
 } // namespace mfem
 

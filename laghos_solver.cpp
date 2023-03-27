@@ -24,7 +24,7 @@
 namespace mfem
 {
 
-namespace hydrodynamics
+namespace geodynamics
 {
 
 void VisualizeField(socketstream &sock, const char *vishost, int visport,
@@ -88,10 +88,10 @@ static void Rho0DetJ0Vol(const int dim, const int NE,
                          QuadratureData &qdata,
                          double &volume);
 
-LagrangianHydroOperator::LagrangianHydroOperator(const int size,
+LagrangianGeoOperator::LagrangianGeoOperator(const int size,
                                                  ParFiniteElementSpace &h1,
                                                  ParFiniteElementSpace &l2,
-                                                 ParFiniteElementSpace &l2_2,
+                                                 ParFiniteElementSpace &l2_stress,
                                                  const Array<int> &ess_tdofs,
                                                  Coefficient &rho0_coeff,
                                                  Coefficient &scale_rho0_coeff,
@@ -106,10 +106,9 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
                                                  const int cgiter,
                                                  double ftz,
                                                  const int oq,
-                                                 Vector &_old_stress, Vector &_inc_stress, Vector &_cur_spin, Vector &_old_spin,
                                                  ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity) : // -0-
    TimeDependentOperator(size),
-   H1(h1), L2(l2), L2_2(l2_2), H1c(H1.GetParMesh(), H1.FEColl(), 1),
+   H1(h1), L2(l2), L2_stress(l2_stress), H1c(H1.GetParMesh(), H1.FEColl(), 1),
    pmesh(H1.GetParMesh()),
    H1Vsize(H1.GetVSize()),
    H1TVSize(H1.TrueVSize()),
@@ -124,7 +123,7 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    dim(pmesh->Dimension()),
    NE(pmesh->GetNE()),
    l2dofs_cnt(L2.GetFE(0)->GetDof()),
-   l2_2dofs_cnt(L2_2.GetFE(0)->GetDof()),
+   l2_stress_dofs_cnt(L2_stress.GetFE(0)->GetDof()),
    h1dofs_cnt(H1.GetFE(0)->GetDof()),
    source_type(source), cfl(cfl),
    use_viscosity(visc),
@@ -134,10 +133,6 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    gamma_gf(gamma_gf),
    lambda_gf(lambda_gf),
    mu_gf(mu_gf),
-   old_stress(_old_stress), 
-   inc_stress(_inc_stress),
-   cur_spin(_cur_spin),
-   old_spin(_old_spin),
    Mv(&H1), Mv_spmat_copy(),
    Me(l2dofs_cnt, l2dofs_cnt, NE),
    Me_inv(l2dofs_cnt, l2dofs_cnt, NE),
@@ -161,8 +156,6 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    one(L2Vsize),
    rhs(H1Vsize),
    e_rhs(L2Vsize),
-   sig_rhs(dim*dim*L2Vsize),
-   sig_one(dim*H1Vsize),
    rhs_c_gf(&H1c),
    dvc_gf(&H1c)
 {
@@ -170,16 +163,14 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    block_offsets[1] = block_offsets[0] + H1Vsize;
    block_offsets[2] = block_offsets[1] + H1Vsize;
    block_offsets[3] = block_offsets[2] + L2Vsize;
-   block_offsets[4] = block_offsets[3] + L2Vsize*dim*dim;
+   block_offsets[4] = block_offsets[3] + L2Vsize*3*(dim-1);
    one.UseDevice(true);
    one = 1.0;
-   sig_one.UseDevice(true);
-   sig_one = 1.0;
 
    if (p_assembly)
    {
       qupdate = new QUpdate(dim, NE, Q1D, visc, vort, cfl,
-                            &timer, gamma_gf, ir, H1, L2, old_stress, inc_stress, cur_spin, old_spin); // -1-
+                            &timer, gamma_gf, ir, H1, L2); // -1-
       // qupdate = new QUpdate(dim, NE, Q1D, visc, vort, cfl,
       //                       &timer, gamma_gf, ir, H1, L2);                            
       ForcePA = new ForcePAOperator(qdata, H1, L2, ir);
@@ -328,7 +319,7 @@ LagrangianHydroOperator::LagrangianHydroOperator(const int size,
    }
 }
 
-LagrangianHydroOperator::~LagrangianHydroOperator()
+LagrangianGeoOperator::~LagrangianGeoOperator()
 {
    delete qupdate;
    if (p_assembly)
@@ -341,7 +332,7 @@ LagrangianHydroOperator::~LagrangianHydroOperator()
    }
 }
 
-// void LagrangianHydroOperator::Mult(const Vector &S, Vector &dS_dt) const
+// void LagrangianGeoOperator::Mult(const Vector &S, Vector &dS_dt) const
 // {
 //    // Make sure that the mesh positions correspond to the ones in S. This is
 //    // needed only because some mfem time integrators don't update the solution
@@ -362,7 +353,7 @@ LagrangianHydroOperator::~LagrangianHydroOperator()
 //    qdata_is_current = false;
 // }
 
-void LagrangianHydroOperator::Mult(const Vector &S, Vector &dS_dt, const double dt) const
+void LagrangianGeoOperator::Mult(const Vector &S, Vector &dS_dt, const double dt) const
 {
    // Make sure that the mesh positions correspond to the ones in S. This is
    // needed only because some mfem time integrators don't update the solution
@@ -384,7 +375,7 @@ void LagrangianHydroOperator::Mult(const Vector &S, Vector &dS_dt, const double 
    qdata_is_current = false;
 }
 
-// void LagrangianHydroOperator::SolveVelocity(const Vector &S,
+// void LagrangianGeoOperator::SolveVelocity(const Vector &S,
 //                                             Vector &dS_dt) const
 // {
 //    UpdateQuadratureData(S);
@@ -481,7 +472,7 @@ void LagrangianHydroOperator::Mult(const Vector &S, Vector &dS_dt, const double 
 //    }
 // }
 
-// void LagrangianHydroOperator::SolveEnergy(const Vector &S, const Vector &v,
+// void LagrangianGeoOperator::SolveEnergy(const Vector &S, const Vector &v,
 //                                           Vector &dS_dt) const
 // {
 //    UpdateQuadratureData(S);
@@ -543,7 +534,7 @@ void LagrangianHydroOperator::Mult(const Vector &S, Vector &dS_dt, const double 
 //    delete e_source;
 // }
 
-void LagrangianHydroOperator::SolveVelocity(const Vector &S,
+void LagrangianGeoOperator::SolveVelocity(const Vector &S,
                                             Vector &dS_dt, const double dt) const
 {
    UpdateQuadratureData(S, dt);
@@ -701,14 +692,14 @@ void LagrangianHydroOperator::SolveVelocity(const Vector &S,
       }
 }
 
-// void LagrangianHydroOperator::test_function(const Vector &S, Vector &_test) const
+// void LagrangianGeoOperator::test_function(const Vector &S, Vector &_test) const
 // {
 //    Vector* sptr = const_cast<Vector*>(&S);
 //    ParGridFunction v;
 //    v.MakeRef(&H1, *sptr, H1.GetVSize());
 // }
 
-void LagrangianHydroOperator::SolveEnergy(const Vector &S, const Vector &v,
+void LagrangianGeoOperator::SolveEnergy(const Vector &S, const Vector &v,
                                           Vector &dS_dt, const double dt) const
 {
    UpdateQuadratureData(S, dt);
@@ -771,140 +762,117 @@ void LagrangianHydroOperator::SolveEnergy(const Vector &S, const Vector &v,
    delete e_source;
 }
 
-void LagrangianHydroOperator::SolveStress(const Vector &S,
+void LagrangianGeoOperator::SolveStress(const Vector &S,
                                           Vector &dS_dt, const double dt) const
 {
    UpdateQuadratureData(S, dt);
 
    ParGridFunction dsig;
-   dsig.MakeRef(&L2_2, dS_dt, H1Vsize*2 + L2Vsize);
-   int NED = NE*l2_2dofs_cnt;
+   dsig.MakeRef(&L2_stress, dS_dt, H1Vsize*2 + L2Vsize);
+   int NED = NE*l2_stress_dofs_cnt;
    int dim2 = dim*dim;
 
    if(dim == 2)
    {
-      Vector sub_rhs1(l2_2dofs_cnt), sub_rhs2(l2_2dofs_cnt), sub_rhs3(l2_2dofs_cnt), sub_rhs4(l2_2dofs_cnt);
-      Vector loc_dsig1(l2_2dofs_cnt), loc_dsig2(l2_2dofs_cnt), loc_dsig3(l2_2dofs_cnt), loc_dsig4(l2_2dofs_cnt);
-      loc_dsig1=0.0; loc_dsig2=0.0; loc_dsig3=0.0; loc_dsig4=0.0;
-      Array<int> offset(5); 
+      Vector sub_rhs1(l2_stress_dofs_cnt), sub_rhs2(l2_stress_dofs_cnt), sub_rhs3(l2_stress_dofs_cnt);
+      Vector loc_dsig1(l2_stress_dofs_cnt), loc_dsig2(l2_stress_dofs_cnt), loc_dsig3(l2_stress_dofs_cnt);
+      loc_dsig1=0.0; loc_dsig2=0.0; loc_dsig3=0.0;
+      Array<int> offset(4); 
       offset[0] = 0;
-      offset[1] = offset[0] + l2_2dofs_cnt;
-      offset[2] = offset[1] + l2_2dofs_cnt;
-      offset[3] = offset[2] + l2_2dofs_cnt;
-      offset[4] = offset[3] + l2_2dofs_cnt;
+      offset[1] = offset[0] + l2_stress_dofs_cnt;
+      offset[2] = offset[1] + l2_stress_dofs_cnt;
+      offset[3] = offset[2] + l2_stress_dofs_cnt;
 
       BlockVector loc_rhs(offset, Device::GetMemoryType());
 
-      sub_rhs1.MakeRef(loc_rhs, 0*l2_2dofs_cnt);
-      sub_rhs2.MakeRef(loc_rhs, 1*l2_2dofs_cnt);
-      sub_rhs3.MakeRef(loc_rhs, 2*l2_2dofs_cnt);
-      sub_rhs4.MakeRef(loc_rhs, 3*l2_2dofs_cnt);
+      sub_rhs1.MakeRef(loc_rhs, 0*l2_stress_dofs_cnt);
+      sub_rhs2.MakeRef(loc_rhs, 1*l2_stress_dofs_cnt);
+      sub_rhs3.MakeRef(loc_rhs, 2*l2_stress_dofs_cnt);
       loc_rhs = 0.0;
   
       SigmaIntegrator gi(qdata);
       gi.SetIntRule(&ir);
-      Array<int> dof_loc1(l2_2dofs_cnt);
-      Array<int> dof_loc2(l2_2dofs_cnt);
-      Array<int> dof_loc3(l2_2dofs_cnt);
-      Array<int> dof_loc4(l2_2dofs_cnt);
+      Array<int> dof_loc1(l2_stress_dofs_cnt);
+      Array<int> dof_loc2(l2_stress_dofs_cnt);
+      Array<int> dof_loc3(l2_stress_dofs_cnt);
    
       for (int e = 0; e < NE; e++)
       {
 
-         L2_2.GetElementDofs(e, dof_loc1);
-         L2_2.GetElementDofs(e, dof_loc2);
-         L2_2.GetElementDofs(e, dof_loc3);
-         L2_2.GetElementDofs(e, dof_loc4);
+         L2_stress.GetElementDofs(e, dof_loc1);
+         L2_stress.GetElementDofs(e, dof_loc2);
+         L2_stress.GetElementDofs(e, dof_loc3);
       
-         const FiniteElement &fe = *L2_2.GetFE(e);
-         ElementTransformation &eltr = *L2_2.GetElementTransformation(e);
+         const FiniteElement &fe = *L2_stress.GetFE(e);
+         ElementTransformation &eltr = *L2_stress.GetElementTransformation(e);
          gi.AssembleRHSElementVect(fe, eltr, loc_rhs);
 
          Me_inv(e).Mult(sub_rhs1, loc_dsig1);
          Me_inv(e).Mult(sub_rhs2, loc_dsig2);
          Me_inv(e).Mult(sub_rhs3, loc_dsig3);
-         Me_inv(e).Mult(sub_rhs4, loc_dsig4);
  
          for (int i = 0; i < dof_loc1.Size(); i++)
          {
             dof_loc1[i] = i + (e+0*NE)*dof_loc1.Size(); 
             dof_loc2[i] = i + (e+1*NE)*dof_loc1.Size();
             dof_loc3[i] = i + (e+2*NE)*dof_loc1.Size(); 
-            dof_loc4[i] = i + (e+3*NE)*dof_loc1.Size(); 
-
          }
 
          dsig.SetSubVector(dof_loc1, loc_dsig1);
          dsig.SetSubVector(dof_loc2, loc_dsig2);
          dsig.SetSubVector(dof_loc3, loc_dsig3);
-         dsig.SetSubVector(dof_loc4, loc_dsig4);
-
       }
    }
    else if(dim == 3)
    {
-      Vector sub_rhs1(l2_2dofs_cnt), sub_rhs2(l2_2dofs_cnt), sub_rhs3(l2_2dofs_cnt);
-      Vector sub_rhs4(l2_2dofs_cnt), sub_rhs5(l2_2dofs_cnt), sub_rhs6(l2_2dofs_cnt);
-      Vector sub_rhs7(l2_2dofs_cnt), sub_rhs8(l2_2dofs_cnt), sub_rhs9(l2_2dofs_cnt);
+      Vector sub_rhs1(l2_stress_dofs_cnt), sub_rhs2(l2_stress_dofs_cnt), sub_rhs3(l2_stress_dofs_cnt);
+      Vector sub_rhs4(l2_stress_dofs_cnt), sub_rhs5(l2_stress_dofs_cnt), sub_rhs6(l2_stress_dofs_cnt);
 
-      Vector loc_dsig1(l2_2dofs_cnt), loc_dsig2(l2_2dofs_cnt), loc_dsig3(l2_2dofs_cnt);
-      Vector loc_dsig4(l2_2dofs_cnt), loc_dsig5(l2_2dofs_cnt), loc_dsig6(l2_2dofs_cnt);
-      Vector loc_dsig7(l2_2dofs_cnt), loc_dsig8(l2_2dofs_cnt), loc_dsig9(l2_2dofs_cnt);
+      Vector loc_dsig1(l2_stress_dofs_cnt), loc_dsig2(l2_stress_dofs_cnt), loc_dsig3(l2_stress_dofs_cnt);
+      Vector loc_dsig4(l2_stress_dofs_cnt), loc_dsig5(l2_stress_dofs_cnt), loc_dsig6(l2_stress_dofs_cnt);
 
-      loc_dsig1=0.0; loc_dsig2=0.0; loc_dsig3=0.0; loc_dsig4=0.0; loc_dsig5=0.0; loc_dsig6=0.0; loc_dsig7=0.0; loc_dsig8=0.0; loc_dsig9=0.0;
-      Array<int> offset(10); 
+      loc_dsig1=0.0; loc_dsig2=0.0; loc_dsig3=0.0; loc_dsig4=0.0; loc_dsig5=0.0; loc_dsig6=0.0;
+      Array<int> offset(7); 
       offset[0] = 0;
-      offset[1] = offset[0] + l2_2dofs_cnt;
-      offset[2] = offset[1] + l2_2dofs_cnt;
-      offset[3] = offset[2] + l2_2dofs_cnt;
-      offset[4] = offset[3] + l2_2dofs_cnt;
-      offset[5] = offset[4] + l2_2dofs_cnt;
-      offset[6] = offset[5] + l2_2dofs_cnt;
-      offset[7] = offset[6] + l2_2dofs_cnt;
-      offset[8] = offset[7] + l2_2dofs_cnt;
-      offset[9] = offset[8] + l2_2dofs_cnt;
-
+      offset[1] = offset[0] + l2_stress_dofs_cnt;
+      offset[2] = offset[1] + l2_stress_dofs_cnt;
+      offset[3] = offset[2] + l2_stress_dofs_cnt;
+      offset[4] = offset[3] + l2_stress_dofs_cnt;
+      offset[5] = offset[4] + l2_stress_dofs_cnt;
+      offset[6] = offset[5] + l2_stress_dofs_cnt;
+      
       BlockVector loc_rhs(offset, Device::GetMemoryType());
 
-      sub_rhs1.MakeRef(loc_rhs, 0*l2_2dofs_cnt);
-      sub_rhs2.MakeRef(loc_rhs, 1*l2_2dofs_cnt);
-      sub_rhs3.MakeRef(loc_rhs, 2*l2_2dofs_cnt);
-      sub_rhs4.MakeRef(loc_rhs, 3*l2_2dofs_cnt);
-      sub_rhs5.MakeRef(loc_rhs, 4*l2_2dofs_cnt);
-      sub_rhs6.MakeRef(loc_rhs, 5*l2_2dofs_cnt);
-      sub_rhs7.MakeRef(loc_rhs, 6*l2_2dofs_cnt);
-      sub_rhs8.MakeRef(loc_rhs, 7*l2_2dofs_cnt);
-      sub_rhs9.MakeRef(loc_rhs, 8*l2_2dofs_cnt);
-
+      sub_rhs1.MakeRef(loc_rhs, 0*l2_stress_dofs_cnt);
+      sub_rhs2.MakeRef(loc_rhs, 1*l2_stress_dofs_cnt);
+      sub_rhs3.MakeRef(loc_rhs, 2*l2_stress_dofs_cnt);
+      sub_rhs4.MakeRef(loc_rhs, 3*l2_stress_dofs_cnt);
+      sub_rhs5.MakeRef(loc_rhs, 4*l2_stress_dofs_cnt);
+      sub_rhs6.MakeRef(loc_rhs, 5*l2_stress_dofs_cnt);
+      
       loc_rhs = 0.0;
   
       SigmaIntegrator gi(qdata);
       gi.SetIntRule(&ir);
-      Array<int> dof_loc1(l2_2dofs_cnt);
-      Array<int> dof_loc2(l2_2dofs_cnt);
-      Array<int> dof_loc3(l2_2dofs_cnt);
-      Array<int> dof_loc4(l2_2dofs_cnt);
-      Array<int> dof_loc5(l2_2dofs_cnt);
-      Array<int> dof_loc6(l2_2dofs_cnt);
-      Array<int> dof_loc7(l2_2dofs_cnt);
-      Array<int> dof_loc8(l2_2dofs_cnt);
-      Array<int> dof_loc9(l2_2dofs_cnt);
-   
+      Array<int> dof_loc1(l2_stress_dofs_cnt);
+      Array<int> dof_loc2(l2_stress_dofs_cnt);
+      Array<int> dof_loc3(l2_stress_dofs_cnt);
+      Array<int> dof_loc4(l2_stress_dofs_cnt);
+      Array<int> dof_loc5(l2_stress_dofs_cnt);
+      Array<int> dof_loc6(l2_stress_dofs_cnt);
+      
       for (int e = 0; e < NE; e++)
       {
 
-         L2_2.GetElementDofs(e, dof_loc1);
-         L2_2.GetElementDofs(e, dof_loc2);
-         L2_2.GetElementDofs(e, dof_loc3);
-         L2_2.GetElementDofs(e, dof_loc4);
-         L2_2.GetElementDofs(e, dof_loc5);
-         L2_2.GetElementDofs(e, dof_loc6);
-         L2_2.GetElementDofs(e, dof_loc7);
-         L2_2.GetElementDofs(e, dof_loc8);
-         L2_2.GetElementDofs(e, dof_loc9);
-      
-         const FiniteElement &fe = *L2_2.GetFE(e);
-         ElementTransformation &eltr = *L2_2.GetElementTransformation(e);
+         L2_stress.GetElementDofs(e, dof_loc1);
+         L2_stress.GetElementDofs(e, dof_loc2);
+         L2_stress.GetElementDofs(e, dof_loc3);
+         L2_stress.GetElementDofs(e, dof_loc4);
+         L2_stress.GetElementDofs(e, dof_loc5);
+         L2_stress.GetElementDofs(e, dof_loc6);
+         
+         const FiniteElement &fe = *L2_stress.GetFE(e);
+         ElementTransformation &eltr = *L2_stress.GetElementTransformation(e);
          gi.AssembleRHSElementVect(fe, eltr, loc_rhs);
 
          Me_inv(e).Mult(sub_rhs1, loc_dsig1);
@@ -913,9 +881,6 @@ void LagrangianHydroOperator::SolveStress(const Vector &S,
          Me_inv(e).Mult(sub_rhs4, loc_dsig4);
          Me_inv(e).Mult(sub_rhs5, loc_dsig5);
          Me_inv(e).Mult(sub_rhs6, loc_dsig6);
-         Me_inv(e).Mult(sub_rhs7, loc_dsig7);
-         Me_inv(e).Mult(sub_rhs8, loc_dsig8);
-         Me_inv(e).Mult(sub_rhs9, loc_dsig9);
 
          for (int i = 0; i < dof_loc1.Size(); i++)
          {
@@ -925,9 +890,6 @@ void LagrangianHydroOperator::SolveStress(const Vector &S,
             dof_loc4[i] = i + (e+3*NE)*dof_loc1.Size(); 
             dof_loc5[i] = i + (e+4*NE)*dof_loc1.Size(); 
             dof_loc6[i] = i + (e+5*NE)*dof_loc1.Size(); 
-            dof_loc7[i] = i + (e+6*NE)*dof_loc1.Size(); 
-            dof_loc8[i] = i + (e+7*NE)*dof_loc1.Size(); 
-            dof_loc9[i] = i + (e+8*NE)*dof_loc1.Size(); 
          }
 
          dsig.SetSubVector(dof_loc1, loc_dsig1);
@@ -936,22 +898,18 @@ void LagrangianHydroOperator::SolveStress(const Vector &S,
          dsig.SetSubVector(dof_loc4, loc_dsig4);
          dsig.SetSubVector(dof_loc5, loc_dsig5);
          dsig.SetSubVector(dof_loc6, loc_dsig6);
-         dsig.SetSubVector(dof_loc7, loc_dsig7);
-         dsig.SetSubVector(dof_loc8, loc_dsig8);
-         dsig.SetSubVector(dof_loc9, loc_dsig9);
-
       }
    }
 }
 
-void LagrangianHydroOperator::UpdateMesh(const Vector &S) const
+void LagrangianGeoOperator::UpdateMesh(const Vector &S) const
 {
    Vector* sptr = const_cast<Vector*>(&S);
    x_gf.MakeRef(&H1, *sptr, 0);
    H1.GetParMesh()->NewNodes(x_gf, false);
 }
 
-void LagrangianHydroOperator::Getdamping(const Vector &S, Vector &_v_damping) const
+void LagrangianGeoOperator::Getdamping(const Vector &S, Vector &_v_damping) const
 {
    Vector* sptr = const_cast<Vector*>(&S);
    ParGridFunction v;
@@ -970,7 +928,7 @@ void LagrangianHydroOperator::Getdamping(const Vector &S, Vector &_v_damping) co
    }
 }
 
-// double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S) const
+// double LagrangianGeoOperator::GetTimeStepEstimate(const Vector &S) const
 // {
 //    UpdateMesh(S);
 //    UpdateQuadratureData(S);
@@ -980,7 +938,7 @@ void LagrangianHydroOperator::Getdamping(const Vector &S, Vector &_v_damping) co
 //    return glob_dt_est;
 // }
 
-double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S, const double dt) const
+double LagrangianGeoOperator::GetTimeStepEstimate(const Vector &S, const double dt) const
 {
    UpdateMesh(S);
    UpdateQuadratureData(S, dt);
@@ -991,7 +949,7 @@ double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S, const doubl
 }
 
 
-double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S, const double dt, bool IamRoot) const
+double LagrangianGeoOperator::GetTimeStepEstimate(const Vector &S, const double dt, bool IamRoot) const
 {
    UpdateMesh(S);
    UpdateQuadratureData(S, dt);
@@ -1002,12 +960,12 @@ double LagrangianHydroOperator::GetTimeStepEstimate(const Vector &S, const doubl
 }
 
 
-void LagrangianHydroOperator::ResetTimeStepEstimate() const
+void LagrangianGeoOperator::ResetTimeStepEstimate() const
 {
    qdata.dt_est = std::numeric_limits<double>::infinity();
 }
 
-void LagrangianHydroOperator::ComputeDensity(ParGridFunction &rho) const
+void LagrangianGeoOperator::ComputeDensity(ParGridFunction &rho) const
 {
    rho.SetSpace(&L2);
    DenseMatrix Mrho(l2dofs_cnt);
@@ -1106,7 +1064,7 @@ double ComputeVolumeIntegral(const ParFiniteElementSpace &pfes,
    return integrand * mass;
 
 }
-double LagrangianHydroOperator::InternalEnergy(const ParGridFunction &gf) const
+double LagrangianGeoOperator::InternalEnergy(const ParGridFunction &gf) const
 {
    double glob_ie = 0.0, internal_energy = 0.0;
 
@@ -1135,7 +1093,7 @@ double LagrangianHydroOperator::InternalEnergy(const ParGridFunction &gf) const
    return glob_ie;
 }
 
-double LagrangianHydroOperator::KineticEnergy(const ParGridFunction &v) const
+double LagrangianGeoOperator::KineticEnergy(const ParGridFunction &v) const
 {
    double glob_ke = 0.0, kinetic_energy = 0.0;
 
@@ -1165,7 +1123,7 @@ double LagrangianHydroOperator::KineticEnergy(const ParGridFunction &v) const
    return 0.5*glob_ke;
 }
 
-void LagrangianHydroOperator::PrintTimingData(bool IamRoot, int steps,
+void LagrangianGeoOperator::PrintTimingData(bool IamRoot, int steps,
                                               const bool fom) const
 {
    const MPI_Comm com = H1.GetComm();
@@ -1256,7 +1214,7 @@ MFEM_HOST_DEVICE inline double smooth_step_01(double x, double eps)
    return (3.0 - 2.0 * y) * y * y;
 }
 
-void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
+void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S) const
 {
    if (qdata_is_current) { return; }
 
@@ -1275,7 +1233,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
    x.MakeRef(&H1, *sptr, 0);
    v.MakeRef(&H1, *sptr, H1.GetVSize());
    e.MakeRef(&L2, *sptr, 2*H1.GetVSize());
-   sig.MakeRef(&L2_2, *sptr, 2*H1.GetVSize()+L2.GetVSize());
+   sig.MakeRef(&L2_stress, *sptr, 2*H1.GetVSize()+L2.GetVSize());
    Vector e_vals;
    DenseMatrix Jpi(dim), sgrad_v(dim), Jinv(dim), stress(dim), stressJiT(dim);
 
@@ -1285,7 +1243,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
    mscale = qdata.mscale;
    grav   = qdata.gravity;
 
-   // Batched computations are needed, because hydrodynamic codes usually
+   // Batched computations are needed, because geodynamic codes usually
    // involve expensive computations of material properties. Although this
    // miniapp uses simple EOS equations, we still want to represent the batched
    // cycle structure.
@@ -1445,7 +1403,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S) const
    timer.quad_tstep += NE;
 }
 
-void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double dt) const
+void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double dt) const
 {
    if (qdata_is_current) { return; }
 
@@ -1463,7 +1421,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
    x.MakeRef(&H1, *sptr, 0);
    v.MakeRef(&H1, *sptr, H1.GetVSize());
    e.MakeRef(&L2, *sptr, 2*H1.GetVSize());
-   sig.MakeRef(&L2_2, *sptr, 2*H1.GetVSize()+L2.GetVSize());
+   sig.MakeRef(&L2_stress, *sptr, 2*H1.GetVSize()+L2.GetVSize());
    Vector e_vals;
    Vector sxx, syy, szz;
    Vector sxy, sxz, syz;
@@ -1485,7 +1443,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
    grav   = qdata.gravity;
    max_vel = std::max(fabs(v.Min()), v.Max());
    
-   // Batched computations are needed, because hydrodynamic codes usually
+   // Batched computations are needed, because geodynamic codes usually
    // involve expensive computations of material properties. Although this
    // miniapp uses simple EOS equations, we still want to represent the batched
    // cycle structure.
@@ -1545,7 +1503,7 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
       for (int z = 0; z < nzones_batch; z++)
       {
          ElementTransformation *T = H1.GetElementTransformation(z_id);
-         // ElementTransformation &eltr = *L2_2.GetElementTransformation(z_id);
+         // ElementTransformation &eltr = *L2_stress.GetElementTransformation(z_id);
 
          for (int q = 0; q < nqp; q++)
          {
@@ -1593,13 +1551,12 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                {
 
                   sig.GetValues(z_id, ir, sxx, 1);
-                  sig.GetValues(z_id, ir, sxy, 2);
-                  sig.GetValues(z_id, ir, sxz, 3);
-                  sig.GetValues(z_id, ir, syy, 5);
+                  sig.GetValues(z_id, ir, syy, 2);
+                  sig.GetValues(z_id, ir, szz, 3);
+                  sig.GetValues(z_id, ir, sxy, 4);
+                  sig.GetValues(z_id, ir, sxz, 5);
                   sig.GetValues(z_id, ir, syz, 6);
-                  sig.GetValues(z_id, ir, szz, 9);
-                  
-                  
+                                    
                   old_sig(0,0) = sxx(q) ; old_sig(0,1) = sxy(q); old_sig(0,2) = sxz(q); 
                   old_sig(1,0) = sxy(q) ; old_sig(1,1) = syy(q); old_sig(1,2) = syz(q);
                   old_sig(2,0) = sxz(q) ; old_sig(2,1) = syz(q); old_sig(2,2) = szz(q);
@@ -1672,9 +1629,6 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
             const double inv_dt = sound_speed / h_min +
                                   2.5 * visc_coeff / rho / h_min / h_min;
             // const double smooth = 2.5 * visc_coeff / rho / h_min / h_min;
-
-            // std::cout << sound_speed << " / " << pseudo_speed << std::endl;
-            // std::cout << z_id << ", "<< q << ", hmin " << h_min << std::endl;
          
             if (min_detJ < 0.0)
             {
@@ -1686,9 +1640,6 @@ void LagrangianHydroOperator::UpdateQuadratureData(const Vector &S, const double
                if (inv_dt>0.0)
                {
                   qdata.dt_est = fmin(qdata.dt_est, cfl*(1.0/inv_dt));
-                  // old_stress[0] = fmin(old_stress[0], h_min); // check h_min size
-                  // old_stress[1] = fmax(old_stress[1], sound_speed); // check h_min size
-                  // old_stress[2] = fmax(old_stress[2], smooth); // check h_min size
                }
             }
             // Quadrature data for partial assembly of the force operator.
@@ -1944,11 +1895,7 @@ void QUpdateBody(const int NE, const int e,
                  const double* __restrict__ d_Jac0inv,
                  double *d_dt_est,
                  double *d_stressJinvT,
-                 double *d_tauJinvT,
-                 double *d_old_stress,
-                 double *d_inc_stress,
-                 double *d_cur_spin,
-                 double *d_old_spin) // -6-
+                 double *d_tauJinvT) // -6-
 {
    constexpr int DIM2 = DIM*DIM;
    double min_detJ = infinity;
@@ -2102,13 +2049,6 @@ void QUpdateBody(const int NE, const int e,
          const int offset = eq + NQ*NE*(gd + vd*DIM);
          d_stressJinvT[offset] = stressJiT[vd + gd*DIM];
          d_tauJinvT[offset] = 0.0;
-         
-         /*
-         d_stressJinvT[offset] = d_inc_stress[offset] + stressJiT[vd + gd*DIM] + tau1_Jit[vd + gd*DIM] -1.0*tau2_Jit[vd + gd*DIM]; // 
-         d_old_stress[offset] = stressJiT[vd + gd*DIM] + tau1_Jit[vd + gd*DIM] -1.0*tau2_Jit[vd + gd*DIM];
-         d_cur_spin[offset]   = spin[vd + gd*DIM];
-         */
-
       }
    }
 
@@ -2319,8 +2259,7 @@ void QKernel(const int NE, const int NQ,
              const Vector &grad_v_ext,
              const DenseTensor &Jac0inv,
              Vector &dt_est,
-             DenseTensor &stressJinvT, DenseTensor &tauJinvT,
-             Vector &old_stress, Vector &inc_stress, Vector &cur_spin, Vector &old_spin) //-4-
+             DenseTensor &stressJinvT, DenseTensor &tauJinvT) //-4-
 {
    constexpr int DIM2 = DIM*DIM;
    const auto d_gamma = gamma_gf.Read();
@@ -2335,10 +2274,6 @@ void QKernel(const int NE, const int NQ,
    auto d_stressJinvT = Write(stressJinvT.GetMemory(), stressJinvT.TotalSize());
    auto d_tauJinvT = Write(tauJinvT.GetMemory(), tauJinvT.TotalSize());
    // auto d_tauJinvT = tauJinvT.ReadWrite();
-   auto d_old_stress = old_stress.ReadWrite();
-   auto d_inc_stress = inc_stress.ReadWrite();
-   auto d_cur_spin = cur_spin.ReadWrite();
-   auto d_old_spin = old_spin.ReadWrite();
    if (DIM == 2)
    {
       MFEM_FORALL_2D(e, NE, Q1D, Q1D, 1,
@@ -2370,8 +2305,7 @@ void QKernel(const int NE, const int NQ,
                                 compr_dir, Jpi, ph_dir, stressJiT,
                                 d_gamma, d_weights, d_Jacobians, d_rho0DetJ0w,
                                 d_e_quads, d_grad_v_ext, d_Jac0inv,
-                                d_dt_est, d_stressJinvT, d_tauJinvT,
-                                d_old_stress, d_inc_stress, d_cur_spin, d_old_spin); //-5a-
+                                d_dt_est, d_stressJinvT, d_tauJinvT); //-5a-
             }
          }
          MFEM_SYNC_THREAD;
@@ -2410,8 +2344,7 @@ void QKernel(const int NE, const int NQ,
                                    compr_dir, Jpi, ph_dir, stressJiT,
                                    d_gamma, d_weights, d_Jacobians, d_rho0DetJ0w,
                                    d_e_quads, d_grad_v_ext, d_Jac0inv,
-                                   d_dt_est, d_stressJinvT, d_tauJinvT,
-                                   d_old_stress, d_inc_stress, d_cur_spin, d_old_spin); //-5b-
+                                   d_dt_est, d_stressJinvT, d_tauJinvT); //-5b-
                }
             }
          }
@@ -2440,7 +2373,6 @@ void QUpdate::UpdateQuadratureData(const Vector &S, QuadratureData &qdata)
    e.MakeRef(&L2, *S_p, 2*H1_size);
    q2->SetOutputLayout(QVectorLayout::byVDIM);
    q2->Values(e, q_e);
-   // sig.MakeRef(&L2_2, *S_p, 2*H1_size+L2_size);
    q_dt_est = qdata.dt_est;
    const int id = (dim << 4) | Q1D;
    typedef void (*fQKernel)(const int NE, const int NQ,
@@ -2493,7 +2425,6 @@ void QUpdate::UpdateQuadratureData(const Vector &S, QuadratureData &qdata, const
    e.MakeRef(&L2, *S_p, 2*H1_size);
    q2->SetOutputLayout(QVectorLayout::byVDIM);
    q2->Values(e, q_e); // q_e -> e_quads -> d_e_quads
-   // sig.MakeRef(&L2_2, *S_p, 2*H1_size+L2_size);
    q_dt_est = qdata.dt_est;
    int v_offset=L2.GetVSize(); // 
    
@@ -2509,8 +2440,7 @@ void QUpdate::UpdateQuadratureData(const Vector &S, QuadratureData &qdata, const
                             const Vector &Jacobians, const Vector &rho0DetJ0w,
                             const Vector &e_quads, const Vector &grad_v_ext,
                             const DenseTensor &Jac0inv,
-                            Vector &dt_est, DenseTensor &stressJinvT, DenseTensor &tauJinvT,
-                            Vector &old_stress, Vector &inc_stress, Vector &cur_spin, Vector &old_spin); // -2-
+                            Vector &dt_est, DenseTensor &stressJinvT, DenseTensor &tauJinvT); // -2-
    static std::unordered_map<int, fQKernel> qupdate =
    {
       {0x24,&QKernel<2,4>}, {0x26,&QKernel<2,6>}, {0x28,&QKernel<2,8>},
@@ -2526,14 +2456,13 @@ void QUpdate::UpdateQuadratureData(const Vector &S, QuadratureData &qdata, const
                dt, 
                cfl, infinity, gamma_gf, ir.GetWeights(), q_dx,
                qdata.rho0DetJ0w, q_e, q_dv,
-               qdata.Jac0inv, q_dt_est, qdata.stressJinvT, qdata.tauJinvT,
-               old_stress, inc_stress, cur_spin, old_spin); // -3-
+               qdata.Jac0inv, q_dt_est, qdata.stressJinvT, qdata.tauJinvT); // -3-
    qdata.dt_est = q_dt_est.Min();
    timer->sw_qdata.Stop();
    timer->quad_tstep += NE;
 }
 
-void LagrangianHydroOperator::AssembleForceMatrix() const
+void LagrangianGeoOperator::AssembleForceMatrix() const
 {
    if (forcemat_is_assembled || p_assembly) { return; }
    Force = 0.0;
@@ -2543,25 +2472,25 @@ void LagrangianHydroOperator::AssembleForceMatrix() const
    forcemat_is_assembled = true;
 }
 
-void LagrangianHydroOperator::AssembleSigmaMatrix() const
+void LagrangianGeoOperator::AssembleSigmaMatrix() const
 {
    // not used anymore
 }
 
-} // namespace hydrodynamics
+} // namespace geodynamics
 
 
-void HydroODESolver::Init(TimeDependentOperator &tdop)
+void GeoODESolver::Init(TimeDependentOperator &tdop)
 {
    ODESolver::Init(tdop);
-   hydro_oper = dynamic_cast<hydrodynamics::LagrangianHydroOperator *>(f);
-   MFEM_VERIFY(hydro_oper, "HydroSolvers expect LagrangianHydroOperator.");
+   geo_oper = dynamic_cast<geodynamics::LagrangianGeoOperator *>(f);
+   MFEM_VERIFY(geo_oper, "GeoSolvers expect LagrangianGeoOperator.");
 }
 
 void RK2AvgSolver::Init(TimeDependentOperator &tdop)
 {
-   HydroODESolver::Init(tdop);
-   const Array<int> &block_offsets = hydro_oper->GetBlockOffsets();
+   GeoODESolver::Init(tdop);
+   const Array<int> &block_offsets = geo_oper->GetBlockOffsets();
    V.SetSize(block_offsets[1], mem_type);
    V.UseDevice(true);
    dS_dt.Update(block_offsets, mem_type);
@@ -2586,30 +2515,30 @@ void RK2AvgSolver::Step(Vector &S, double &t, double &dt)
 
    // -- 1.
    // S is S0.
-   hydro_oper->UpdateMesh(S);
-   hydro_oper->SolveVelocity(S, dS_dt, dt);
+   geo_oper->UpdateMesh(S);
+   geo_oper->SolveVelocity(S, dS_dt, dt);
    // V = v0 + 0.5 * dt * dv_dt;
    add(v0, 0.5 * dt, dv_dt, V);
-   hydro_oper->SolveEnergy(S, V, dS_dt, dt);
-   hydro_oper->SolveStress(S, dS_dt, dt);
+   geo_oper->SolveEnergy(S, V, dS_dt, dt);
+   geo_oper->SolveStress(S, dS_dt, dt);
    dx_dt = V;
 
    // -- 2.
    // S = S0 + 0.5 * dt * dS_dt;
    add(S0, 0.5 * dt, dS_dt, S);
-   hydro_oper->ResetQuadratureData();
-   hydro_oper->UpdateMesh(S);
-   hydro_oper->SolveVelocity(S, dS_dt, dt);
+   geo_oper->ResetQuadratureData();
+   geo_oper->UpdateMesh(S);
+   geo_oper->SolveVelocity(S, dS_dt, dt);
    // V = v0 + 0.5 * dt * dv_dt;
    add(v0, 0.5 * dt, dv_dt, V);
-   hydro_oper->SolveEnergy(S, V, dS_dt, dt);
-   hydro_oper->SolveStress(S, dS_dt, dt);
+   geo_oper->SolveEnergy(S, V, dS_dt, dt);
+   geo_oper->SolveStress(S, dS_dt, dt);
    dx_dt = V;
 
    // -- 3.
    // S = S0 + dt * dS_dt.
    add(S0, dt, dS_dt, S);
-   hydro_oper->ResetQuadratureData();
+   geo_oper->ResetQuadratureData();
    t += dt;
 }
 
