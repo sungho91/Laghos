@@ -49,9 +49,15 @@ struct QuadratureData
 
    // Quadrature data used for full/partial assembly of the stress rate operator.
    DenseTensor tauJinvT;
-   
+  
    // Quadrature data used for full/partial assembly of the body force operator.
    DenseTensor buoyJinvT; // We store it (vector) as a tensor form.
+
+   // Quadrature data used for full/partial assembly of the plastic strain operator.
+   // DenseTensor epsJinvT;
+
+   // Quadrature data used for full/partial assembly of the plastic strain operator.
+   // DenseTensor plsJinvT;
 
    // Initial length scale. This represents a notion of local mesh size.
    // We assume that all initial zones have similar size.
@@ -66,12 +72,14 @@ struct QuadratureData
 
    // gravity
    double gravity;
-
+   
    QuadratureData(int dim, int NE, int quads_per_el)
       : Jac0inv(dim, dim, NE * quads_per_el),
         stressJinvT(NE * quads_per_el, dim, dim),
         tauJinvT(NE * quads_per_el, dim, dim),
         buoyJinvT(NE * quads_per_el, dim, dim),
+      //   epsJinvT(NE * quads_per_el, dim, dim),
+      //   plsJinvT(NE * quads_per_el, dim, dim),
         rho0DetJ0w(NE * quads_per_el) { }
 };
 
@@ -103,6 +111,21 @@ public:
                                        ElementTransformation &Tr,
                                        Vector &elvect);
 };
+
+/*
+class PlasticIntegrator : public LinearFormIntegrator
+{
+   using LinearFormIntegrator::AssembleRHSElementVect;
+private:
+   const QuadratureData &qdata;
+
+public:
+   PlasticIntegrator(QuadratureData &qdata) : qdata(qdata) { }
+   virtual void AssembleRHSElementVect(const FiniteElement &fe,
+                                       ElementTransformation &Tr,
+                                       Vector &elvect);
+};
+*/
 
 /*
 class SigmaIntegrator : public BilinearFormIntegrator

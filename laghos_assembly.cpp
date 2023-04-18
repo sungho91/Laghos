@@ -115,6 +115,72 @@ void SigmaIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
    }
 }
 
+/*
+void PlasticIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
+                                               ElementTransformation &Tr,
+                                               Vector &elvect)
+{
+   const int nqp = IntRule->GetNPoints();
+   const int e = Tr.ElementNo;
+   const int dim = fe.GetDim();
+   const int dim2 = 3*(dim-1);
+   const int num = fe.GetDof(); 
+
+   Vector shape(fe.GetDof());
+   elvect.SetSize(fe.GetDof()*dim2);
+   elvect = 0.0;
+   double sxx{0.0}, sxy{0.0}, sxz{0.0};
+   double syy{0.0}, syz{0.0};
+   double szz{0.0};
+
+   if(dim == 2)
+   {
+      for (int q = 0; q < nqp; q++)
+      {
+      
+         fe.CalcShape(IntRule->IntPoint(q), shape);
+         const int eq = e*nqp + q; // quardature point
+         sxx = qdata.plsJinvT(0)(eq, 0);
+         sxy = qdata.plsJinvT(0)(eq, 1);
+         syy = qdata.plsJinvT(1)(eq, 1);
+
+         for (int i = 0; i < num; i++)
+         {
+           elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
+           elvect[i+num*1] = elvect[i+num*1] + shape[i]*syy;
+           elvect[i+num*2] = elvect[i+num*2] + shape[i]*sxy;
+         }
+      }
+   }
+
+   else if(dim == 3)
+   {
+      for (int q = 0; q < nqp; q++)
+      {
+      
+         fe.CalcShape(IntRule->IntPoint(q), shape);
+         const int eq = e*nqp + q; // quardature point
+         sxx = qdata.plsJinvT(0)(eq, 0);
+         sxy = qdata.plsJinvT(0)(eq, 1);
+         sxz = qdata.plsJinvT(0)(eq, 2);
+         syy = qdata.plsJinvT(1)(eq, 1);
+         syz = qdata.plsJinvT(1)(eq, 2);
+         szz = qdata.plsJinvT(2)(eq, 2);
+
+         for (int i = 0; i < num; i++)
+         {
+           elvect[i+num*0] = elvect[i+num*0] + shape[i]*sxx;
+           elvect[i+num*1] = elvect[i+num*1] + shape[i]*syy;
+           elvect[i+num*2] = elvect[i+num*2] + shape[i]*szz;
+           elvect[i+num*3] = elvect[i+num*3] + shape[i]*sxy;
+           elvect[i+num*4] = elvect[i+num*4] + shape[i]*sxz;
+           elvect[i+num*5] = elvect[i+num*5] + shape[i]*syz;
+         }
+      }
+   }
+}
+*/
+
 void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
                                              const FiniteElement &test_fe,
                                              ElementTransformation &Tr,

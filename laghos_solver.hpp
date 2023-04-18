@@ -142,6 +142,7 @@ protected:
    const ParGridFunction &gamma_gf;
    const ParGridFunction &lambda_gf;
    const ParGridFunction &mu_gf;
+   mutable Vector tension_cutoff, cohesion, friction_angle, dilation_angle;
    // Velocity mass matrix and local inverses of the energy mass matrices. These
    // are constant in time, due to the pointwise mass conservation property.
    mutable ParBilinearForm Mv;
@@ -211,7 +212,8 @@ public:
                            const bool visc, const bool vort, const bool pa,
                            const double cgt, const int cgiter, double ftz_tol,
                            const int order_q,
-                           ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity);
+                           ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity,
+                           Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle);
    ~LagrangianGeoOperator();
 
 
@@ -229,6 +231,7 @@ public:
    // void SolveVelocity(const Vector &S, Vector &dS_dt, const double dt, const double t) const;
    void SolveEnergy(const Vector &S, const Vector &v, Vector &dS_dt, const double dt) const;
    void SolveStress(const Vector &S, Vector &dS_dt, const double dt) const;
+   // void RadialReturn(const Vector &S, Vector &dS_dt, const double dt) const;
    void UpdateMesh(const Vector &S) const;
    // void test_function(const Vector &S, Vector &_test) const;
    void Getdamping(const Vector &S, Vector &_v_damping) const;

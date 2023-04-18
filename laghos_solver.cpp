@@ -18,6 +18,7 @@
 #include "laghos_solver.hpp"
 #include "linalg/kernels.hpp"
 #include <unordered_map>
+#include <cmath>
 
 #ifdef MFEM_USE_MPI
 
@@ -106,7 +107,8 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
                                                  const int cgiter,
                                                  double ftz,
                                                  const int oq,
-                                                 ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity) : // -0-
+                                                 ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity,
+                                                 Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle) : // -0-
    TimeDependentOperator(size),
    H1(h1), L2(l2), L2_stress(l2_stress), H1c(H1.GetParMesh(), H1.FEColl(), 1),
    pmesh(H1.GetParMesh()),
@@ -116,7 +118,7 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
    L2Vsize(L2.GetVSize()),
    L2TVSize(L2.TrueVSize()),
    L2GTVSize(L2.GlobalTrueVSize()),
-   block_offsets(5),
+   block_offsets(6),
    // block_offsets(4),
    x_gf(&H1),
    ess_tdofs(ess_tdofs),
@@ -133,6 +135,10 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
    gamma_gf(gamma_gf),
    lambda_gf(lambda_gf),
    mu_gf(mu_gf),
+   tension_cutoff(_tension_cutoff.Size()),
+   cohesion(_cohesion.Size()),
+   friction_angle(_friction_angle.Size()),
+   dilation_angle(_dilation_angle.Size()),
    Mv(&H1), Mv_spmat_copy(),
    Me(l2dofs_cnt, l2dofs_cnt, NE),
    Me_inv(l2dofs_cnt, l2dofs_cnt, NE),
@@ -159,14 +165,33 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
    rhs_c_gf(&H1c),
    dvc_gf(&H1c)
 {
+   // If you add block vector, you should add offset 
    block_offsets[0] = 0;
    block_offsets[1] = block_offsets[0] + H1Vsize;
    block_offsets[2] = block_offsets[1] + H1Vsize;
    block_offsets[3] = block_offsets[2] + L2Vsize;
    block_offsets[4] = block_offsets[3] + L2Vsize*3*(dim-1);
+   block_offsets[5] = block_offsets[4] + L2Vsize;
    one.UseDevice(true);
    one = 1.0;
+   // std::cout << M_PI << " " << M_E << " " << M_SQRT2 << std::endl;
 
+   for (int i = 0; i < pmesh->attributes.Max(); i++)
+   {
+      if(_tension_cutoff[i] == 0)
+      {
+         tension_cutoff[i] = _cohesion[i]/tan(M_PI*_friction_angle[i]/180.0); // Tension limit
+      }
+      else
+      {
+         tension_cutoff[i] = _tension_cutoff[i];
+      }
+      
+      cohesion[i] = _cohesion[i];
+      friction_angle[i] = M_PI*_friction_angle[i]/180.0;
+      dilation_angle[i] = M_PI*_dilation_angle[i]/180.0;
+   }
+   
    if (p_assembly)
    {
       qupdate = new QUpdate(dim, NE, Q1D, visc, vort, cfl,
@@ -902,6 +927,139 @@ void LagrangianGeoOperator::SolveStress(const Vector &S,
    }
 }
 
+/*
+void LagrangianGeoOperator::RadialReturn(const Vector &S,
+                                          Vector &dS_dt, const double dt) const
+{
+   UpdateQuadratureData(S, dt);
+
+   ParGridFunction dsig;
+   dsig.MakeRef(&L2_stress, dS_dt, H1Vsize*2 + L2Vsize);
+   int NED = NE*l2_stress_dofs_cnt;
+   int dim2 = dim*dim;
+   
+   if(dim == 2)
+   {
+      Vector sub_rhs1(l2_stress_dofs_cnt), sub_rhs2(l2_stress_dofs_cnt), sub_rhs3(l2_stress_dofs_cnt);
+      Array<int> offset(4); 
+      offset[0] = 0;
+      offset[1] = offset[0] + l2_stress_dofs_cnt;
+      offset[2] = offset[1] + l2_stress_dofs_cnt;
+      offset[3] = offset[2] + l2_stress_dofs_cnt;
+
+      BlockVector loc_rhs(offset, Device::GetMemoryType());
+
+      sub_rhs1.MakeRef(loc_rhs, 0*l2_stress_dofs_cnt);
+      sub_rhs2.MakeRef(loc_rhs, 1*l2_stress_dofs_cnt);
+      sub_rhs3.MakeRef(loc_rhs, 2*l2_stress_dofs_cnt);
+      loc_rhs = 0.0;
+  
+      PlasticIntegrator pi(qdata);
+      pi.SetIntRule(&ir);
+      Array<int> dof_loc1(l2_stress_dofs_cnt);
+      Array<int> dof_loc2(l2_stress_dofs_cnt);
+      Array<int> dof_loc3(l2_stress_dofs_cnt);
+   
+      for (int e = 0; e < NE; e++)
+      {
+
+         L2_stress.GetElementDofs(e, dof_loc1);
+         L2_stress.GetElementDofs(e, dof_loc2);
+         L2_stress.GetElementDofs(e, dof_loc3);
+      
+         const FiniteElement &fe = *L2_stress.GetFE(e);
+         ElementTransformation &eltr = *L2_stress.GetElementTransformation(e);
+         pi.AssembleRHSElementVect(fe, eltr, loc_rhs);
+
+          
+         for (int i = 0; i < dof_loc1.Size(); i++)
+         {
+            dof_loc1[i] = i + (e+0*NE)*dof_loc1.Size(); 
+            dof_loc2[i] = i + (e+1*NE)*dof_loc1.Size();
+            dof_loc3[i] = i + (e+2*NE)*dof_loc1.Size(); 
+         }
+
+         dsig.AddSubVector(sub_rhs1, dof_loc1[0]);
+         dsig.AddSubVector(sub_rhs2, dof_loc2[0]);
+         dsig.AddSubVector(sub_rhs3, dof_loc3[0]);
+      }
+   }
+   else if(dim == 3)
+   {
+      Vector sub_rhs1(l2_stress_dofs_cnt), sub_rhs2(l2_stress_dofs_cnt), sub_rhs3(l2_stress_dofs_cnt);
+      Vector sub_rhs4(l2_stress_dofs_cnt), sub_rhs5(l2_stress_dofs_cnt), sub_rhs6(l2_stress_dofs_cnt);
+
+      Array<int> offset(7); 
+      offset[0] = 0;
+      offset[1] = offset[0] + l2_stress_dofs_cnt;
+      offset[2] = offset[1] + l2_stress_dofs_cnt;
+      offset[3] = offset[2] + l2_stress_dofs_cnt;
+      offset[4] = offset[3] + l2_stress_dofs_cnt;
+      offset[5] = offset[4] + l2_stress_dofs_cnt;
+      offset[6] = offset[5] + l2_stress_dofs_cnt;
+      
+      BlockVector loc_rhs(offset, Device::GetMemoryType());
+
+      sub_rhs1.MakeRef(loc_rhs, 0*l2_stress_dofs_cnt);
+      sub_rhs2.MakeRef(loc_rhs, 1*l2_stress_dofs_cnt);
+      sub_rhs3.MakeRef(loc_rhs, 2*l2_stress_dofs_cnt);
+      sub_rhs4.MakeRef(loc_rhs, 3*l2_stress_dofs_cnt);
+      sub_rhs5.MakeRef(loc_rhs, 4*l2_stress_dofs_cnt);
+      sub_rhs6.MakeRef(loc_rhs, 5*l2_stress_dofs_cnt);
+      
+      loc_rhs = 0.0;
+  
+      PlasticIntegrator pi(qdata);
+      pi.SetIntRule(&ir);
+      Array<int> dof_loc1(l2_stress_dofs_cnt);
+      Array<int> dof_loc2(l2_stress_dofs_cnt);
+      Array<int> dof_loc3(l2_stress_dofs_cnt);
+      Array<int> dof_loc4(l2_stress_dofs_cnt);
+      Array<int> dof_loc5(l2_stress_dofs_cnt);
+      Array<int> dof_loc6(l2_stress_dofs_cnt);
+      
+      for (int e = 0; e < NE; e++)
+      {
+
+         L2_stress.GetElementDofs(e, dof_loc1);
+         L2_stress.GetElementDofs(e, dof_loc2);
+         L2_stress.GetElementDofs(e, dof_loc3);
+         L2_stress.GetElementDofs(e, dof_loc4);
+         L2_stress.GetElementDofs(e, dof_loc5);
+         L2_stress.GetElementDofs(e, dof_loc6);
+         
+         const FiniteElement &fe = *L2_stress.GetFE(e);
+         ElementTransformation &eltr = *L2_stress.GetElementTransformation(e);
+         pi.AssembleRHSElementVect(fe, eltr, loc_rhs);
+
+         for (int i = 0; i < dof_loc1.Size(); i++)
+         {
+            dof_loc1[i] = i + (e+0*NE)*dof_loc1.Size(); 
+            dof_loc2[i] = i + (e+1*NE)*dof_loc1.Size();
+            dof_loc3[i] = i + (e+2*NE)*dof_loc1.Size(); 
+            dof_loc4[i] = i + (e+3*NE)*dof_loc1.Size(); 
+            dof_loc5[i] = i + (e+4*NE)*dof_loc1.Size(); 
+            dof_loc6[i] = i + (e+5*NE)*dof_loc1.Size(); 
+         }
+
+         sub_rhs1 /= dt;
+         sub_rhs2 /= dt;
+         sub_rhs3 /= dt;
+         sub_rhs4 /= dt;
+         sub_rhs5 /= dt;
+         sub_rhs6 /= dt;
+
+         dsig.AddSubVector(sub_rhs1, dof_loc1[0]);
+         dsig.AddSubVector(sub_rhs2, dof_loc2[0]);
+         dsig.AddSubVector(sub_rhs3, dof_loc3[0]);
+         dsig.AddSubVector(sub_rhs4, dof_loc4[0]);
+         dsig.AddSubVector(sub_rhs5, dof_loc5[0]);
+         dsig.AddSubVector(sub_rhs6, dof_loc6[0]);
+      }
+   }
+}
+*/
+
 void LagrangianGeoOperator::UpdateMesh(const Vector &S) const
 {
    Vector* sptr = const_cast<Vector*>(&S);
@@ -1229,11 +1387,13 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S) const
    timer.sw_qdata.Start();
    const int nqp = ir.GetNPoints();
    ParGridFunction x, v, e, sig;
+   ParGridFunction pla;
    Vector* sptr = const_cast<Vector*>(&S);
    x.MakeRef(&H1, *sptr, 0);
    v.MakeRef(&H1, *sptr, H1.GetVSize());
    e.MakeRef(&L2, *sptr, 2*H1.GetVSize());
    sig.MakeRef(&L2_stress, *sptr, 2*H1.GetVSize()+L2.GetVSize());
+   // pla.MakeRef(&L2, *sptr, 2*H1.GetVSize()+L2.GetVSize()+3*(dim-1)*L2.GetVSize());
    Vector e_vals;
    DenseMatrix Jpi(dim), sgrad_v(dim), Jinv(dim), stress(dim), stressJiT(dim);
 
@@ -1417,11 +1577,13 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
    timer.sw_qdata.Start();
    const int nqp = ir.GetNPoints();
    ParGridFunction x, v, e, sig;
+   ParGridFunction pla;
    Vector* sptr = const_cast<Vector*>(&S);
    x.MakeRef(&H1, *sptr, 0);
    v.MakeRef(&H1, *sptr, H1.GetVSize());
    e.MakeRef(&L2, *sptr, 2*H1.GetVSize());
    sig.MakeRef(&L2_stress, *sptr, 2*H1.GetVSize()+L2.GetVSize());
+   // pla.MakeRef(&L2, *sptr, 2*H1.GetVSize()+L2.GetVSize()+3*(dim-1)*L2.GetVSize());
    Vector e_vals;
    Vector sxx, syy, szz;
    Vector sxy, sxz, syz;
@@ -1432,6 +1594,18 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
    DenseMatrix old_sig(dim);
    DenseMatrix crot1(dim), crot2(dim);
    DenseMatrix buoy(dim);
+   // DenseMatrix plastic_str(dim), plastic_sig(dim);
+
+   double sig1{0.0};
+   double sig3{0.0};
+
+   // double fs{0.0};
+   // double ft{0.0};
+   // double fh{0.0};
+   // double N_phi{0.0};
+   // double st_N_phi{0.0};
+   // double N_psi{0.0};
+   // double beta{0.0};
 
    double lame1{1.0};
    double lame2{1.0};
@@ -1439,10 +1613,17 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
    double mscale{1.0};
    double grav{0.0};
 
+   // double tesion_cut{0.0};
+   // double coh{0.0};
+   // double fric_ang{0.0};
+   // double dila_ang{0.0};
+   int    index = 0;
+
    mscale = qdata.mscale;
    grav   = qdata.gravity;
    max_vel = std::max(fabs(v.Min()), v.Max());
    
+   // std::cout << x.Size() << ", "<< v.Size() << ", "<< e.Size() << ", "<< sig.Size() << ", "<< pla.Size() <<std::endl;
    // Batched computations are needed, because geodynamic codes usually
    // involve expensive computations of material properties. Although this
    // miniapp uses simple EOS equations, we still want to represent the batched
@@ -1519,10 +1700,13 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
             // const double detJ = Jpr.Det(), rho = rho_b[z*nqp + q],
             //              p = p_b[z*nqp + q], sound_speed = cs_b[z*nqp + q];
 
+
+            index = gamma_b[z*nqp + q];
             lame1 = lambda_b[z*nqp + q];
             lame2 = mu_b[z*nqp + q];
             stress = 0.0; tau0 = 0.0; tau1 = 0.0; old_sig = 0.0;
             buoy   = 0.0; buoy(dim-1, dim-1) = -1.0*grav ;
+            // plastic_str = 0.0; plastic_sig = 0.0;
 
             for (int d = 0; d < dim; d++) { stress(d, d) = 0; }
             // for (int d = 0; d < dim; d++) { stress(d, d) = -p; }
@@ -1561,7 +1745,7 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                   old_sig(1,0) = sxy(q) ; old_sig(1,1) = syy(q); old_sig(1,2) = syz(q);
                   old_sig(2,0) = sxz(q) ; old_sig(2,1) = syz(q); old_sig(2,2) = szz(q);
                }
-               
+
                double vorticity_coeff = 1.0;
                if (use_vorticity)
                {
@@ -1577,7 +1761,8 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                spin.Add(-1.0, srate);
 
                double eig_val_data[3], eig_vec_data[9];
-               
+               double eig_sig_var[3], eig_sig_vec[9];
+                              
                if (dim==1)
                {
                   eig_val_data[0] = sgrad_v(0, 0);
@@ -1605,6 +1790,74 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                stress.Add(0.0*visc_coeff, sgrad_v); // applying visc_coeff
                stress.Add(1.0, old_sig); // previous total stress
 
+               /*
+               // Calculating principle stress solvinf eigen value and vector
+               stress.CalcEigenvalues(eig_sig_var, eig_sig_vec);
+               Vector sig_var(eig_sig_var, dim);
+               Vector sig_dir(eig_sig_vec, dim);
+
+               sig1 = sig_var.Min(); // most compressive 
+               sig3 = sig_var.Max(); // least compressive
+
+               N_phi = (1+sin(friction_angle[index]))/(1-sin(friction_angle[index]));
+               st_N_phi = cos(friction_angle[index])/(1-sin(friction_angle[index]));
+               N_psi = -1*(1+sin(dilation_angle[index]))/(1-sin(dilation_angle[index]));
+               // shear failure function
+               fs = sig1 - N_phi*sig3 + 2*cohesion[index]*st_N_phi;
+               // tension failure function
+               ft = sig3 - tension_cutoff[index];
+               // bisects the obtuse angle made by two yield function
+               fh = sig3 - tension_cutoff[index] + (sqrt(N_phi*N_phi + 1.0)+ N_phi)*(sig1 - N_phi*tension_cutoff[index] + 2*cohesion[index]*st_N_phi);
+
+               if(fs < 0 & fh < 0)
+               {
+                  beta = fs;
+                  beta = beta / (((lame1+2*lame2)*1 - N_phi*lame1*1) + (lame1*N_psi - N_phi*(lame1+2*lame2)*N_psi));
+
+                  if(dim == 2)
+                  {
+                     plastic_str(0,0) = beta * 1; plastic_str(1,1) = beta * N_psi;
+                  }
+                  else
+                  {
+                     plastic_str(0,0) = beta * 1; plastic_str(2,2) = beta * N_psi;
+                  }
+               }
+               else if (ft > 0 & fh > 0)
+               {
+                  beta = ft;
+                  if(dim == 2)
+                  {
+                     plastic_str(1,1) = beta * 1;
+                  }
+                  else
+                  {
+                     plastic_str(2,2) = beta * 1;
+                  }
+               }
+
+               // Rotating Principal axis to XYZ axis
+               if(dim == 2)
+               {
+                  plastic_sig(0,0) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[0]*sig_dir[0] + plastic_str(1,1)*sig_dir[2]*sig_dir[2]);
+                  plastic_sig(0,1) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[0]*sig_dir[1] + plastic_str(1,1)*sig_dir[2]*sig_dir[3]);
+                  plastic_sig(1,0) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[1]*sig_dir[0] + plastic_str(1,1)*sig_dir[3]*sig_dir[2]);
+                  plastic_sig(1,1) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[1]*sig_dir[1] + plastic_str(1,1)*sig_dir[3]*sig_dir[3]);
+               }
+               else
+               {
+                  plastic_sig(0,0) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[0]*sig_dir[0] + plastic_str(1,1)*sig_dir[3]*sig_dir[3] + plastic_str(2,2)*sig_dir[6]*sig_dir[6]);
+                  plastic_sig(0,1) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[0]*sig_dir[1] + plastic_str(1,1)*sig_dir[3]*sig_dir[4] + plastic_str(2,2)*sig_dir[6]*sig_dir[7]);
+                  plastic_sig(0,2) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[0]*sig_dir[2] + plastic_str(1,1)*sig_dir[3]*sig_dir[5] + plastic_str(2,2)*sig_dir[6]*sig_dir[8]);
+                  plastic_sig(1,0) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[1]*sig_dir[0] + plastic_str(1,1)*sig_dir[4]*sig_dir[3] + plastic_str(2,2)*sig_dir[7]*sig_dir[6]);
+                  plastic_sig(1,1) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[1]*sig_dir[1] + plastic_str(1,1)*sig_dir[4]*sig_dir[4] + plastic_str(2,2)*sig_dir[7]*sig_dir[7]);
+                  plastic_sig(1,2) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[1]*sig_dir[2] + plastic_str(1,1)*sig_dir[4]*sig_dir[5] + plastic_str(2,2)*sig_dir[7]*sig_dir[8]);
+                  plastic_sig(2,0) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[2]*sig_dir[0] + plastic_str(1,1)*sig_dir[5]*sig_dir[3] + plastic_str(2,2)*sig_dir[8]*sig_dir[6]);
+                  plastic_sig(2,1) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[2]*sig_dir[1] + plastic_str(1,1)*sig_dir[5]*sig_dir[4] + plastic_str(2,2)*sig_dir[8]*sig_dir[7]);
+                  plastic_sig(2,2) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[2]*sig_dir[2] + plastic_str(1,1)*sig_dir[5]*sig_dir[5] + plastic_str(2,2)*sig_dir[8]*sig_dir[8]);
+               }
+               */
+
                // #if
                tau0.Set(2*lame2,srate); // 2 * G * eij
                tau1.Set(1*lame1*srate.Trace(), tau1); // lambda*tr(strain rate)*Identity
@@ -1617,6 +1870,7 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                // Juamman stress increment
                tau0.Add(1.0,  crot1); 
                tau0.Add(-1.0, crot2); 
+               // tau0.Add(-1.0, plastic_sig); // Applying plastic stress correction.
                // #ifend
             }
             // Time step estimate at the point. Here the more relevant length
@@ -1647,6 +1901,8 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
             stressJiT *= ir.IntPoint(q).weight * detJ;
             tau0 *= ir.IntPoint(q).weight * detJ * (rho / mscale); 
             buoy *= ir.IntPoint(q).weight * detJ * (rho / mscale);
+            
+            // plastic_sig *= -1 * ir.IntPoint(q).weight * detJ;
 
             for (int vd = 0 ; vd < dim; vd++)
             {
@@ -1657,6 +1913,8 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                   qdata.stressJinvT(vd)(z_id*nqp + q, gd) = stressJiT(vd, gd);
                   qdata.tauJinvT(vd)(z_id*nqp + q, gd)    = tau0(vd, gd);
                   qdata.buoyJinvT(vd)(z_id*nqp + q, gd)   = buoy(vd, gd);
+                  // qdata.plsJinvT(vd)(z_id*nqp + q, gd)    = plastic_sig(vd, gd);
+                  // qdata.epsJinvT(vd)(z_id*nqp + q, gd)    = 0.0;
                }
             }
          }
@@ -2515,12 +2773,14 @@ void RK2AvgSolver::Step(Vector &S, double &t, double &dt)
 
    // -- 1.
    // S is S0.
+   
    geo_oper->UpdateMesh(S);
    geo_oper->SolveVelocity(S, dS_dt, dt);
    // V = v0 + 0.5 * dt * dv_dt;
    add(v0, 0.5 * dt, dv_dt, V);
    geo_oper->SolveEnergy(S, V, dS_dt, dt);
    geo_oper->SolveStress(S, dS_dt, dt);
+   // geo_oper->RadialReturn(S, dS_dt, 1.0);
    dx_dt = V;
 
    // -- 2.
@@ -2533,6 +2793,7 @@ void RK2AvgSolver::Step(Vector &S, double &t, double &dt)
    add(v0, 0.5 * dt, dv_dt, V);
    geo_oper->SolveEnergy(S, V, dS_dt, dt);
    geo_oper->SolveStress(S, dS_dt, dt);
+   // geo_oper->RadialReturn(S, dS_dt, 1.0);
    dx_dt = V;
 
    // -- 3.
