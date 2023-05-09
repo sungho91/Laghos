@@ -135,8 +135,9 @@ protected:
    const Array<int> &ess_tdofs;
    const int dim, NE, l2dofs_cnt, l2_stress_dofs_cnt, h1dofs_cnt, source_type;
    const double cfl;
-   const bool use_viscosity, use_vorticity, p_assembly;
+   const bool use_viscosity, use_vorticity, p_assembly, winkler_foundation;
    const double cg_rel_tol;
+   mutable double mass_scale, grav_mag, thickness;
    const int cg_max_iter;
    const double ftz_tol;
    const ParGridFunction &gamma_gf;
@@ -181,7 +182,6 @@ protected:
                                           const double rho[], const double e[],
                                           double p[], double cs[], double pmod[], double mscale) const
    {
-      // double mscale{1.0e20};
       for (int v = 0; v < nvalues; v++)
       {
          p[v]  = rho[v] * e[v];
@@ -212,8 +212,8 @@ public:
                            const bool visc, const bool vort, const bool pa,
                            const double cgt, const int cgiter, double ftz_tol,
                            const int order_q,
-                           ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity,
-                           Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle);
+                           ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity, const double _thickness,
+                           Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle, const bool winkler);
    ~LagrangianGeoOperator();
 
 
@@ -235,6 +235,7 @@ public:
    void UpdateMesh(const Vector &S) const;
    // void test_function(const Vector &S, Vector &_test) const;
    void Getdamping(const Vector &S, Vector &_v_damping) const;
+   void Winkler(const Vector &S, Vector &_winkler, double &_thickness) const;
    
    // Calls UpdateQuadratureData to compute the new qdata.dt_estimate.
    // double GetTimeStepEstimate(const Vector &S) const;
@@ -277,7 +278,14 @@ public:
    virtual void Eval(Vector &V, ElementTransformation &T,
                      const IntegrationPoint &ip)
    {
-      V = 0.0; V(1) = -1.0;
+      if(V.Size() == 2)
+      {
+         V = 0.0; V(1) = -1.0;
+      }
+      else if(V.Size() == 3)
+      {
+         V = 0.0; V(2) = -1.0; 
+      }
    }
 };
 

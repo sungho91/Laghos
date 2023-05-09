@@ -236,19 +236,21 @@ void BodyForceIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
    double grav0{0.0};
    double grav1{0.0};
    double grav2{0.0};
+
+   double dummy{0.0};
    
    if(dim == 2)
    {
       for (int q = 0; q < nqp; q++)
       {
+         grav0 = 0.0; grav1 = 0.0; grav2 = 0.0;
          const IntegrationPoint &ip = IntRule->IntPoint(q);
 
          fe.CalcShape(ip, shape);
          const int eq = e*nqp + q; // quardature point
-         grav0 = qdata.buoyJinvT(1)(eq, 0); 
+         // grav0 = qdata.buoyJinvT(0)(eq, 0) + qdata.buoyJinvT(0)(eq, 1);
          grav1 = qdata.buoyJinvT(1)(eq, 1);
-
-         // std::cout << e << " , " << q << ", " << grav1 <<std::endl;
+         
          for (int i = 0; i < num; i++) // H1 dof (i.e. 9 for second order)
          {
             elvect[i+num*0] = elvect[i+num*0] + shape[i]*grav0; // in x direction
@@ -260,13 +262,16 @@ void BodyForceIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
    {
       for (int q = 0; q < nqp; q++)
       {
+         grav0 = 0.0; grav1 = 0.0; grav2 = 0.0;
          const IntegrationPoint &ip = IntRule->IntPoint(q);
 
          fe.CalcShape(ip, shape);
          const int eq = e*nqp + q; // quardature point
-         grav0 = qdata.buoyJinvT(2)(eq, 0); 
-         grav1 = qdata.buoyJinvT(2)(eq, 1); 
-         grav2 = qdata.buoyJinvT(2)(eq, 2); 
+         
+         // grav0 = qdata.buoyJinvT(2)(eq, 0); 
+         // grav1 = qdata.buoyJinvT(2)(eq, 1); 
+         grav2 = qdata.buoyJinvT(2)(eq, 2);  
+         
 
          for (int i = 0; i < num; i++) // H1 dof (i.e. 9 for second order)
          {

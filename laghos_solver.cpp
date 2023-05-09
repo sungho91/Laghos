@@ -107,8 +107,8 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
                                                  const int cgiter,
                                                  double ftz,
                                                  const int oq,
-                                                 ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity,
-                                                 Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle) : // -0-
+                                                 ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity, const double _thickness, 
+                                                 Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle, const bool winkler_foundation) : // -0-
    TimeDependentOperator(size),
    H1(h1), L2(l2), L2_stress(l2_stress), H1c(H1.GetParMesh(), H1.FEColl(), 1),
    pmesh(H1.GetParMesh()),
@@ -128,9 +128,11 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
    l2_stress_dofs_cnt(L2_stress.GetFE(0)->GetDof()),
    h1dofs_cnt(H1.GetFE(0)->GetDof()),
    source_type(source), cfl(cfl),
+   mass_scale(mscale), grav_mag(gravity), thickness(_thickness),
    use_viscosity(visc),
    use_vorticity(vort),
    p_assembly(p_assembly),
+   winkler_foundation(winkler_foundation),
    cg_rel_tol(cgt), cg_max_iter(cgiter),ftz_tol(ftz),
    gamma_gf(gamma_gf),
    lambda_gf(lambda_gf),
@@ -171,26 +173,26 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
    block_offsets[2] = block_offsets[1] + H1Vsize;
    block_offsets[3] = block_offsets[2] + L2Vsize;
    block_offsets[4] = block_offsets[3] + L2Vsize*3*(dim-1);
-   block_offsets[5] = block_offsets[4] + L2Vsize;
+   block_offsets[5] = block_offsets[4] + H1Vsize;
+   // block_offsets[5] = block_offsets[4] + L2Vsize;
    one.UseDevice(true);
    one = 1.0;
-   // std::cout << M_PI << " " << M_E << " " << M_SQRT2 << std::endl;
 
-   for (int i = 0; i < pmesh->attributes.Max(); i++)
-   {
-      if(_tension_cutoff[i] == 0)
-      {
-         tension_cutoff[i] = _cohesion[i]/tan(M_PI*_friction_angle[i]/180.0); // Tension limit
-      }
-      else
-      {
-         tension_cutoff[i] = _tension_cutoff[i];
-      }
+   // for (int i = 0; i < pmesh->attributes.Max(); i++)
+   // {
+   //    if(_tension_cutoff[i] == 0)
+   //    {
+   //       tension_cutoff[i] = _cohesion[i]/tan(M_PI*_friction_angle[i]/180.0); // Tension limit
+   //    }
+   //    else
+   //    {
+   //       tension_cutoff[i] = _tension_cutoff[i];
+   //    }
       
-      cohesion[i] = _cohesion[i];
-      friction_angle[i] = M_PI*_friction_angle[i]/180.0;
-      dilation_angle[i] = M_PI*_dilation_angle[i]/180.0;
-   }
+   //    cohesion[i] = _cohesion[i];
+   //    friction_angle[i] = M_PI*_friction_angle[i]/180.0;
+   //    dilation_angle[i] = M_PI*_dilation_angle[i]/180.0;
+   // }
    
    if (p_assembly)
    {
@@ -256,14 +258,22 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
       qdata.gravity = gravity;
       // Standard assembly for the velocity mass matrix.
 
-      // VectorMassIntegrator *vmi = new VectorMassIntegrator(rho0_coeff, &ir);
-      VectorMassIntegrator *vmi = new VectorMassIntegrator(scale_rho0_coeff, &ir);
+      VectorMassIntegrator *vmi = new VectorMassIntegrator(rho0_coeff, &ir);
+      // VectorMassIntegrator *vmi = new VectorMassIntegrator(scale_rho0_coeff, &ir);
       Mv.AddDomainIntegrator(vmi);
 
       // ConstantCoefficient coeff(mscale);
       // Mv.AddDomainIntegrator(new MassIntegrator(coeff));
       Mv.Assemble();
       Mv_spmat_copy = Mv.SpMat();
+
+      // Check scaling muliplication //
+      // Vector s_rho(pmesh->attributes.Max());
+      // s_rho = 2700*mscale;
+      // PWConstCoefficient coeff(s_rho);
+      Mv.AddDomainIntegrator(new VectorMassIntegrator(scale_rho0_coeff, &ir));
+      Mv.Assemble();
+      // Mv_spmat_copy = Mv.SpMat();
    }
 
    // Values of rho0DetJ0 and Jac0inv at all quadrature points.
@@ -570,38 +580,14 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S,
    dv.MakeRef(&H1, dS_dt, H1Vsize);
    dv = 0.0;
    ParGridFunction accel_src_gf;
-   if (source_type == 2)
-   {
-      accel_src_gf.SetSpace(&H1);
-      RTCoefficient accel_coeff(dim);
-      accel_src_gf.ProjectCoefficient(accel_coeff);
-      accel_src_gf.Read();
-   }
-
-   
+   accel_src_gf.SetSpace(&H1);
+   RTCoefficient accel_coeff(dim);
+   accel_src_gf.ProjectCoefficient(accel_coeff);
+   accel_src_gf.Read();
+   accel_src_gf *= grav_mag;
    Body_Force.Assemble();
 
-   // #if 
-   /*
-   VectorArrayCoefficient f_load(dim);
-   for (int i = 0; i < dim-1; i++)
-   {
-      f_load.Set(i, new ConstantCoefficient(0.0));
-   }
-   {
-      Vector pull_force(pmesh->bdr_attributes.Max());
-      pull_force = 0.0;
-      // pull_force(1) = -1.0e-2;
-      pull_force(1) = 0.0;
-      f_load.Set(dim-1, new PWConstCoefficient(pull_force));
-   }
-
-   LinearForm *v_source = nullptr;
-   v_source = new LinearForm(&H1);
-   v_source->AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(f_load));
-   v_source->Assemble();
-   */
-
+   
    if (p_assembly)
    {
       timer.sw_force.Start();
@@ -660,13 +646,35 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S,
       // Applying body force
       rhs.Add(1.0, Body_Force);
 
-
-      if (source_type == 2)
+      if(winkler_foundation)
       {
-         Vector rhs_accel(rhs.Size());
-         Mv_spmat_copy.Mult(accel_src_gf, rhs_accel);
-         rhs += rhs_accel;
+         Array<int> nbc_bdr(pmesh->bdr_attributes.Max());   
+         nbc_bdr = 0; nbc_bdr[2] = 1; // bottome boundary
+         LinearForm winkler(&H1);
+
+         VectorArrayCoefficient winkler_load(dim);
+         for (int i = 0; i < dim-1; i++)
+         {
+            winkler_load.Set(i, new ConstantCoefficient(0.0));
+         }
+         
+         Vector pull_force(pmesh->bdr_attributes.Max());
+         pull_force = 0.0;
+         pull_force(2) = 2700*grav_mag;
+         winkler_load.Set(1, new PWConstCoefficient(pull_force));
+
+         winkler.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(winkler_load), nbc_bdr);
+         winkler.Assemble();
+
+         // Applying winkler      
+         Winkler(S, winkler, thickness);
+         rhs.Add(1.0,  winkler);
       }
+
+      // Applying body force
+      // Vector rhs_body(rhs.Size());
+      // Mv_spmat_copy.Mult(accel_src_gf, rhs_body);
+      // rhs += rhs_body;
 
       HypreParMatrix A;
       Mv.FormLinearSystem(ess_tdofs, dv, rhs, A, X, B);
@@ -682,7 +690,7 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S,
       CGSolver cg(H1.GetParMesh()->GetComm());
       HypreSmoother prec;
       // prec.SetType(HypreSmoother::Jacobi, 1); // l1-scaled Jacobi 
-      prec.SetType(HypreSmoother::Jacobi, 16);  // Chebyshev
+      prec.SetType(HypreSmoother::Chebyshev);  // Chebyshev
       cg.SetPreconditioner(prec);
       cg.SetOperator(A);
       cg.SetRelTol(cg_rel_tol);
@@ -712,8 +720,6 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S,
       // // 15. Recover the parallel grid function corresponding to X. This is the
       // //     local finite element solution on each processor.
       // Mv.RecoverFEMSolution(X, rhs, dv);
-
-      // delete v_source;
       }
 }
 
@@ -1073,16 +1079,30 @@ void LagrangianGeoOperator::Getdamping(const Vector &S, Vector &_v_damping) cons
    ParGridFunction v;
    v.MakeRef(&H1, *sptr, H1.GetVSize());
    double max_vel{0.0};
+   double mass_scale{0.0};
    max_vel = std::max(fabs(v.Min()), v.Max());
    v.SetTrueVector();
    Vector vt = v.GetTrueVector();
 
-   if(max_vel > 1e-9)
+   if(max_vel > 1e-10)
    {
       for( int i = 0; i < _v_damping.Size(); i++ )
       {  
-         _v_damping[i]=-1*0.8*copysignl(1.0, vt[i])*fabs(_v_damping[i]); //
+         _v_damping[i]=-1*0.80*copysignl(1.0, vt[i])*fabs(_v_damping[i]); //
       }
+   }
+}
+
+void LagrangianGeoOperator::Winkler(const Vector &S, Vector &_winkler, double &_thickness) const
+{
+   Vector* sptr = const_cast<Vector*>(&S);
+   ParGridFunction x, x_ini;
+   x.MakeRef(&H1, *sptr, H1.GetVSize()*0);
+   x_ini.MakeRef(&H1, *sptr, H1.GetVSize()*2 + L2.GetVSize() + L2.GetVSize()*3*(dim-1));
+   // for( int i = 0; i < _winkler.Size()/2; i++ )
+   for( int i = 0; i < _winkler.Size(); i++ )
+   {
+      _winkler[i]=-1.0*(x[i]-(x_ini[i] + _thickness))*_winkler[i]; //
    }
 }
 
@@ -1401,7 +1421,7 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S) const
    double grav{0.0};
 
    mscale = qdata.mscale;
-   grav   = qdata.gravity;
+   grav   = -1.0*qdata.gravity;
 
    // Batched computations are needed, because geodynamic codes usually
    // involve expensive computations of material properties. Although this
@@ -1593,11 +1613,14 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
    DenseMatrix tau0(dim), tau1(dim);
    DenseMatrix old_sig(dim);
    DenseMatrix crot1(dim), crot2(dim);
-   DenseMatrix buoy(dim);
+   DenseMatrix buoy(dim), buoyJiT(dim);
    // DenseMatrix plastic_str(dim), plastic_sig(dim);
 
-   double sig1{0.0};
-   double sig3{0.0};
+   // double sig1{0.0};
+   // double sig3{0.0};
+
+   double msig{0.0};
+   double zsig{0.0};
 
    // double fs{0.0};
    // double ft{0.0};
@@ -1612,6 +1635,7 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
    double max_vel{0.0};
    double mscale{1.0};
    double grav{0.0};
+   double qvol{0.0};
 
    // double tesion_cut{0.0};
    // double coh{0.0};
@@ -1620,7 +1644,7 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
    int    index = 0;
 
    mscale = qdata.mscale;
-   grav   = qdata.gravity;
+   grav   = -1.0*qdata.gravity;
    max_vel = std::max(fabs(v.Min()), v.Max());
    
    // std::cout << x.Size() << ", "<< v.Size() << ", "<< e.Size() << ", "<< sig.Size() << ", "<< pla.Size() <<std::endl;
@@ -1683,6 +1707,7 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
       z_id -= nzones_batch;
       for (int z = 0; z < nzones_batch; z++)
       {
+         qvol =0.0;
          ElementTransformation *T = H1.GetElementTransformation(z_id);
          // ElementTransformation &eltr = *L2_stress.GetElementTransformation(z_id);
 
@@ -1705,7 +1730,8 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
             lame1 = lambda_b[z*nqp + q];
             lame2 = mu_b[z*nqp + q];
             stress = 0.0; tau0 = 0.0; tau1 = 0.0; old_sig = 0.0;
-            buoy   = 0.0; buoy(dim-1, dim-1) = -1.0*grav ;
+            buoy   = 0.0; buoyJiT = 0.0; 
+            buoy(dim-1, dim-1) = 1.0*grav;
             // plastic_str = 0.0; plastic_sig = 0.0;
 
             for (int d = 0; d < dim; d++) { stress(d, d) = 0; }
@@ -1727,9 +1753,10 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                if(dim == 2)
                {
                   sig.GetValues(z_id, ir, sxx, 1);
-                  sig.GetValues(z_id, ir, sxy, 2);
-                  sig.GetValues(z_id, ir, syy, 4);
+                  sig.GetValues(z_id, ir, syy, 2);
+                  sig.GetValues(z_id, ir, sxy, 3);
                   old_sig(0,0) = sxx(q) ; old_sig(0,1) = sxy(q); old_sig(1,0) = sxy(q); old_sig(1,1) = syy(q);
+                  // std::cout << sxx(q) << ", " << syy(q) << ", "<< sxy(q) << std::endl;
                }
                else if(dim == 3)
                {
@@ -1790,7 +1817,65 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                stress.Add(0.0*visc_coeff, sgrad_v); // applying visc_coeff
                stress.Add(1.0, old_sig); // previous total stress
 
-               /*
+               // #if
+               tau0.Set(2*lame2,srate); // 2 * G * eij
+               tau1.Set(1*lame1*srate.Trace(), tau1); // lambda*tr(strain rate)*Identity
+               tau0.Add(1.0, tau1); // stress rate for s_ij grid function.
+               // tau0.Add(-1.0, tau1); // deviatoric stress rate for s_ij grid function.
+               
+               mfem::Mult(old_sig, spin, crot1);
+               mfem::Mult(spin, old_sig, crot2);
+
+               // Juamman stress increment
+               tau0.Add(1.0,  crot1); 
+               tau0.Add(-1.0, crot2); 
+               // tau0.Add(-1.0, plastic_sig); // Applying plastic stress correction.
+               // #ifend
+            }
+            // Time step estimate at the point. Here the more relevant length
+            // scale is related to the actual mesh deformation; we use the min
+            // singular value of the ref->physical Jacobian. In addition, the
+            // time step estimate should be aware of the presence of shocks.
+            const double h_min =
+               Jpr.CalcSingularvalue(dim-1) / (double) H1.GetOrder(0);
+
+            // const double inv_dt = sound_speed / h_min;
+            // const double inv_dt = sound_speed / h_min +
+                                 //  2.5 * visc_coeff / rho / h_min / h_min;
+            const double inv_dt = sound_speed / h_min +
+                                  1.0 * visc_coeff / rho / h_min / h_min;
+         
+            if (min_detJ < 0.0)
+            {
+               // This will force repetition of the step with smaller dt.
+               qdata.dt_est = 0.0;
+            }
+            else
+            {
+               if (inv_dt>0.0)
+               {
+                  qdata.dt_est = fmin(qdata.dt_est, cfl*(1.0/inv_dt));
+               }
+            }
+            // Quadrature data for partial assembly of the force operator.
+            MultABt(stress, Jinv, stressJiT);
+            stressJiT *= ir.IntPoint(q).weight * detJ;
+            tau0 *= ir.IntPoint(q).weight * detJ * (rho / mscale);
+            buoy *= ir.IntPoint(q).weight * detJ * (rho / mscale);
+            
+            for (int vd = 0 ; vd < dim; vd++)
+            {
+               for (int gd = 0; gd < dim; gd++)
+               {
+                  const int offset = z_id*nqp + q + nqp*NE*(gd + vd*dim);
+                  
+                  qdata.stressJinvT(vd)(z_id*nqp + q, gd) = stressJiT(vd, gd);
+                  qdata.tauJinvT(vd)(z_id*nqp + q, gd)    = tau0(vd, gd);
+                  qdata.buoyJinvT(vd)(z_id*nqp + q, gd)   = buoy(vd, gd);
+               }
+            }
+
+            /*
                // Calculating principle stress solvinf eigen value and vector
                stress.CalcEigenvalues(eig_sig_var, eig_sig_vec);
                Vector sig_var(eig_sig_var, dim);
@@ -1857,66 +1942,15 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
                   plastic_sig(2,2) = (lame1+2*lame2)*(plastic_str(0,0)*sig_dir[2]*sig_dir[2] + plastic_str(1,1)*sig_dir[5]*sig_dir[5] + plastic_str(2,2)*sig_dir[8]*sig_dir[8]);
                }
                */
-
-               // #if
-               tau0.Set(2*lame2,srate); // 2 * G * eij
-               tau1.Set(1*lame1*srate.Trace(), tau1); // lambda*tr(strain rate)*Identity
-               tau0.Add(1.0, tau1); // stress rate for s_ij grid function.
-               // tau0.Add(-1.0, tau1); // deviatoric stress rate for s_ij grid function.
-               
-               mfem::Mult(old_sig, spin, crot1);
-               mfem::Mult(spin, old_sig, crot2);
-
-               // Juamman stress increment
-               tau0.Add(1.0,  crot1); 
-               tau0.Add(-1.0, crot2); 
-               // tau0.Add(-1.0, plastic_sig); // Applying plastic stress correction.
-               // #ifend
-            }
-            // Time step estimate at the point. Here the more relevant length
-            // scale is related to the actual mesh deformation; we use the min
-            // singular value of the ref->physical Jacobian. In addition, the
-            // time step estimate should be aware of the presence of shocks.
-            const double h_min =
-               Jpr.CalcSingularvalue(dim-1) / (double) H1.GetOrder(0);
-
-            const double inv_dt = sound_speed / h_min +
-                                  2.5 * visc_coeff / rho / h_min / h_min;
-            // const double smooth = 2.5 * visc_coeff / rho / h_min / h_min;
-         
-            if (min_detJ < 0.0)
-            {
-               // This will force repetition of the step with smaller dt.
-               qdata.dt_est = 0.0;
-            }
-            else
-            {
-               if (inv_dt>0.0)
-               {
-                  qdata.dt_est = fmin(qdata.dt_est, cfl*(1.0/inv_dt));
-               }
-            }
-            // Quadrature data for partial assembly of the force operator.
-            MultABt(stress, Jinv, stressJiT);
-            stressJiT *= ir.IntPoint(q).weight * detJ;
-            tau0 *= ir.IntPoint(q).weight * detJ * (rho / mscale); 
-            buoy *= ir.IntPoint(q).weight * detJ * (rho / mscale);
+              
+            // MultABt(buoy, Jinv, buoyJiT);
+            // buoyJiT *= ir.IntPoint(q).weight * detJ * (rho / mscale);
             
             // plastic_sig *= -1 * ir.IntPoint(q).weight * detJ;
 
-            for (int vd = 0 ; vd < dim; vd++)
-            {
-               for (int gd = 0; gd < dim; gd++)
-               {
-                  const int offset = z_id*nqp + q + nqp*NE*(gd + vd*dim);
-                  
-                  qdata.stressJinvT(vd)(z_id*nqp + q, gd) = stressJiT(vd, gd);
-                  qdata.tauJinvT(vd)(z_id*nqp + q, gd)    = tau0(vd, gd);
-                  qdata.buoyJinvT(vd)(z_id*nqp + q, gd)   = buoy(vd, gd);
-                  // qdata.plsJinvT(vd)(z_id*nqp + q, gd)    = plastic_sig(vd, gd);
-                  // qdata.epsJinvT(vd)(z_id*nqp + q, gd)    = 0.0;
-               }
-            }
+            // std::cout << q  << "," << ir.IntPoint(q).weight * detJ * (rho / mscale) << "," << buoy(0,1) + buoy(1,1)<< ","<< buoy(0,1) << "," << buoy(1,1) << std::endl;
+            // qvol += ir.IntPoint(q).weight * detJ;
+            // if(q == 15){std::cout << z_id <<" , " << qvol <<std::endl;}
          }
          ++z_id;
       }

@@ -65,6 +65,8 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include "laghos_solver.hpp"
+#include "laghos_rheology.hpp"
+#include "laghos_function.hpp"
 #include <cmath>
 
 using std::cout;
@@ -73,58 +75,9 @@ using namespace mfem;
 
 // Choice for the problem setup.
 static int problem, dim;
-
-// Forward declarations.
-double e0(const Vector &);
-double p0(const Vector &);
-double rho0(const Vector &);
-double gamma_func(const Vector &);
-void v0(const Vector &, Vector &);
-
-void Returnmapping (Vector &, Vector &, Vector &, int &, Vector &, Vector &, Vector &, Vector &, Vector &, Vector &);
-
 static long GetMaxRssMB();
 static void display_banner(std::ostream&);
 static void Checks(const int ti, const double norm, int &checks);
-
-class StressCoefficient : public VectorCoefficient
-{
-private:
-   ParGridFunction &u;
-   Coefficient &lambda, &mu;
-   DenseMatrix eps, sigma;
-   int dim;
-
-public:
-   StressCoefficient (int &_dim, ParGridFunction &_u, Coefficient &_lambda, Coefficient &_mu)
-      : VectorCoefficient(_dim), u(_u), lambda(_lambda), mu(_mu) {dim=_dim;}
-   virtual void Eval(Vector &K, ElementTransformation &T, const IntegrationPoint &ip)
-   {
-   u.GetVectorGradient(T, eps);  // eps = grad(u)
-   eps.Symmetrize();             // eps = (1/2)*(grad(u) + grad(u)^t)
-   double l = lambda.Eval(T, ip);
-   double m = mu.Eval(T, ip);
-   sigma=0.0;
-   sigma.Diag(2*eps.Trace()/3, eps.Size()); // sigma = lambda*trace(eps)*I
-   sigma.Add(2, eps);          // sigma += 2*mu*eps
-   
-   K.SetSize(3*(dim-1));
-   if(dim ==2)
-   {
-      K(0)=sigma(0,0); K(1)=sigma(1,1); K(2)=sigma(0,1);
-   }
-   else if(dim ==3)
-   {
-      K(0)=0; K(1)=1; K(2)=2;
-      K(3)=3; K(4)=4; K(5)=5;
-
-      // K(0)=sigma(0,0); K(1)=sigma(1,1); K(2)=sigma(2,2);
-      // K(3)=sigma(0,1); K(4)=sigma(0,2); K(5)=sigma(1,2);
-   }
-   }
-
-   virtual ~StressCoefficient() { }
-};
 
 int main(int argc, char *argv[])
 {
@@ -149,9 +102,9 @@ int main(int argc, char *argv[])
    int ode_solver_type = 7;
    double t_final = 1.0;
    double cfl = 0.5;
-   double cg_tol = 1e-12;
+   double cg_tol = 1e-13;
    double ftz_tol = 0.0;
-   int cg_max_iter = 300;
+   int cg_max_iter = 1000;
    int max_tsteps = -1;
    bool p_assembly = false;
    bool impose_visc = true;
@@ -168,12 +121,23 @@ int main(int argc, char *argv[])
    bool fom = false;
    bool gpu_aware_mpi = false;
    int dev = 0;
-   bool year = false;
-   // bool year = true;
+   bool year = true;
+   bool winkler_foundation = false;
+   bool lithostatic = true;
    double init_dt = 1.0;
-   // double mscale  = 1.0;
-   double mscale  = 1.0e6;
-   double gravity = 0.0; // magnitude 
+   double mscale  = 1.0e16;
+   double gravity = 10.0; // magnitude 
+   double thickness = 10.0e3; // meter 
+   double winkler_rho = 2700.0; // Density of substratum
+   // Plasticity and Weakzone
+   bool plastic = true;
+   bool viscoplastic = false;
+   double weak_rad = 1.0e3; // circular weakzone
+   double weak_x = 50.0e3; // x coord of circular
+   double weak_y = 2.00e3; // y coord of circular
+   double weak_z = 0.00e3; // z coord of circular
+   double ini_pls = 0.5;   // initial plasticity
+   Vector weak_location(dim);
    // double init_dt = 1e-1;
    double blast_energy = 0.0;
    // double blast_energy = 1.0e-6;
@@ -345,6 +309,42 @@ int main(int argc, char *argv[])
 
    // Refine the mesh in serial to increase the resolution.
    for (int lev = 0; lev < rs_levels; lev++) { mesh->UniformRefinement(); }
+
+   // Local refiement
+   Array<int> refs;
+   for (int i = 0; i < mesh->GetNE(); i++)
+   {
+      if(mesh->GetAttribute(i) >= 2)
+      {
+         refs.Append(i);
+      }
+   }
+
+   mesh->GeneralRefinement(refs, 1);
+   refs.DeleteAll();
+
+   for (int i = 0; i < mesh->GetNE(); i++)
+   {
+      if(mesh->GetAttribute(i) == 3)
+      {
+         refs.Append(i);
+      }
+   }
+
+   mesh->GeneralRefinement(refs, 1);
+   refs.DeleteAll();
+
+   for (int i = 0; i < mesh->GetNE(); i++)
+   {
+      if(mesh->GetAttribute(i) == 3)
+      {
+         refs.Append(i);
+      }
+   }
+
+   mesh->GeneralRefinement(refs, 1);
+   refs.DeleteAll();
+
    const int mesh_NE = mesh->GetNE();
    if (mpi.Root())
    {
@@ -498,13 +498,16 @@ int main(int argc, char *argv[])
    ParFiniteElementSpace L2FESpace(pmesh, &L2FEC);
    ParFiniteElementSpace H1FESpace(pmesh, &H1FEC, pmesh->Dimension());
    ParFiniteElementSpace L2FESpace_stress(pmesh, &L2FEC, 3*(dim-1)); // three varibles for 2D, six varibles for 3D
-   
+
    // Boundary conditions: all tests use v.n = 0 on the boundary, and we assume
    // that the boundaries are straight.
    Array<int> ess_tdofs, ess_vdofs;
    {
       Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
+
       /*
+      // Body force test problem in 2D
+      // Fix bottom surface
       ess_bdr = 0; ess_bdr[0] = 1; 
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
       ess_tdofs.Append(dofs_list);
@@ -512,13 +515,15 @@ int main(int argc, char *argv[])
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
 
-      ess_bdr = 0; ess_bdr[2] = 1; ess_bdr[2] = 1;
+      // Fix x component on side surface
+      ess_bdr = 0; ess_bdr[2] = 1;
       H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
       ess_tdofs.Append(dofs_list);
       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
       */
+      
       
       /*
       // Body force test problem
@@ -547,31 +552,69 @@ int main(int argc, char *argv[])
       ess_vdofs.Append(dofs_list);
       */
 
-   
+      // /*Plastic Oedometer Test boundary condition*/
+      // // x compoent is constained in left and right sides 
+      // ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
+      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
+      // ess_tdofs.Append(dofs_list);
+      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
+      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      // ess_vdofs.Append(dofs_list);
+
+      // // z compoent is constained in top and bottom sides
+      // ess_bdr = 0; ess_bdr[2] = 1; ess_bdr[3] = 1;
+      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 2);
+      // ess_tdofs.Append(dofs_list);
+      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 2);
+      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      // ess_vdofs.Append(dofs_list);
+
+      // // y compoent is constained in front and back sides 
+      // ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
+      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
+      // ess_tdofs.Append(dofs_list);
+      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
+      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      // ess_vdofs.Append(dofs_list);
+
+      /*Core Complex*/
       // x compoent is constained in left and right sides 
       ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
+      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,0);
       ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
+      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0);
       FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
       ess_vdofs.Append(dofs_list);
 
-      // z compoent is constained in top and bottom sides
-      ess_bdr = 0; ess_bdr[2] = 1; ess_bdr[3] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 2);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 2);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
+      // // z compoent is constained in bottom side
+      // ess_bdr = 0; ess_bdr[2] = 1; 
+      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, dim-1);
+      // ess_tdofs.Append(dofs_list);
+      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, dim-1);
+      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      // ess_vdofs.Append(dofs_list);
 
-      // y compoent is constained in front and back sides 
-      ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
+      // // y compoent is constained in front and back sides 
+      // ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
+      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
+      // ess_tdofs.Append(dofs_list);
+      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
+      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+      // ess_vdofs.Append(dofs_list);
    }
+
+   // Neumann boundary for Winkler foundation
+   // Array<int> surf_ess_tdofs, surf_ess_vdofs;
+   // {
+   //    Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
+   //    // z compoent is constained in top and bottom sides
+   //    ess_bdr = 0; ess_bdr[3] = 1;
+   //    H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 2);
+   //    surf_ess_tdofs.Append(dofs_list);
+   //    H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 2);
+   //    FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
+   //    surf_ess_vdofs.Append(dofs_list);
+   // }
 
    // Define the explicit ODE solver used for time integration.
    ODESolver *ode_solver = NULL;
@@ -618,7 +661,8 @@ int main(int argc, char *argv[])
    offset[2] = offset[1] + Vsize_h1;
    offset[3] = offset[2] + Vsize_l2;
    offset[4] = offset[3] + Vsize_l2*3*(dim-1);
-   offset[5] = offset[4] + Vsize_l2;
+   offset[5] = offset[4] + Vsize_h1;
+   // offset[5] = offset[4] + Vsize_l2;
    BlockVector S(offset, Device::GetMemoryType());
 
    // Define GridFunction objects for the position, velocity and specific
@@ -626,21 +670,44 @@ int main(int argc, char *argv[])
    // compute the density values given the current mesh position, using the
    // property of pointwise mass conservation.
    ParGridFunction x_gf, v_gf, e_gf, s_gf;
-   ParGridFunction p_gf;
+   ParGridFunction x_ini_gf;
    x_gf.MakeRef(&H1FESpace, S, offset[0]);
    v_gf.MakeRef(&H1FESpace, S, offset[1]);
    e_gf.MakeRef(&L2FESpace, S, offset[2]);
    s_gf.MakeRef(&L2FESpace_stress, S, offset[3]);
-   p_gf.MakeRef(&L2FESpace, S, offset[4]);
+   x_ini_gf.MakeRef(&H1FESpace, S, offset[4]);
 
    // Initialize x_gf using the starting mesh coordinates.
    pmesh->SetNodalGridFunction(&x_gf);
    // Sync the data location of x_gf with its base, S
    x_gf.SyncAliasMemory(S);
+
+   // xyz coordinates in L2 space
+   ParGridFunction x_gf_l2(&L2FESpace);
+   ParGridFunction y_gf_l2(&L2FESpace);
+   ParGridFunction z_gf_l2(&L2FESpace);
+   x_gf_l2 = 0.0; y_gf_l2 = 0.0; z_gf_l2 = 0.0;
+   FunctionCoefficient x_coeff(x_l2);
+   FunctionCoefficient y_coeff(y_l2);
+   x_gf_l2.ProjectCoefficient(x_coeff);
+   y_gf_l2.ProjectCoefficient(y_coeff);
+
+   if(dim == 3)
+   {
+      FunctionCoefficient z_coeff(z_l2);
+      z_gf_l2.ProjectCoefficient(z_coeff);
+   }
    
+
    // Initialize the velocity.
+   v_gf = 0.0;
    VectorFunctionCoefficient v_coeff(pmesh->Dimension(), v0);
    v_gf.ProjectCoefficient(v_coeff);
+   
+   for (int i = 0; i < ess_vdofs.Size(); i++)
+   {
+      // v_gf(ess_vdofs[i]) = 0.0;
+   }
 
    // For the Sedov test, we use a delta function at the origin.
    // Vector dir(pmesh->Dimension());
@@ -668,9 +735,9 @@ int main(int argc, char *argv[])
    // this density is a temporary function and it will not be updated during the
    // time evolution.
    Vector z_rho(pmesh->attributes.Max());
-   z_rho = 2800;
+   z_rho = 2700;
    Vector s_rho(pmesh->attributes.Max());
-   s_rho = 2800*mscale;
+   s_rho = 2700*mscale;
 
    ParGridFunction rho0_gf(&L2FESpace);
    PWConstCoefficient rho0_coeff(z_rho);
@@ -712,11 +779,13 @@ int main(int argc, char *argv[])
    // Piecewise constant elastic stiffness over the Lagrangian mesh.
    // Lambda and Mu is Lame's first and second constants
    Vector lambda(pmesh->attributes.Max());
-   lambda = 200e6-200e6*(2.0/3.0);
-   // lambda = 200.0e6;
+   // lambda = 50e9-30e9*(2.0/3.0);
+   lambda = 30e9;
+   // lambda = 1.0e6;
    PWConstCoefficient lambda_func(lambda);
    Vector mu(pmesh->attributes.Max());
-   mu = 200.0e6;
+   // mu = 1.0e6;
+   mu = 30e9;
    PWConstCoefficient mu_func(mu);
    
    // Project PWConstCoefficient to grid function
@@ -746,28 +815,60 @@ int main(int argc, char *argv[])
 
    // Material properties of Plasticity
    Vector tension_cutoff(pmesh->attributes.Max());
-   Vector cohesion(pmesh->attributes.Max());
+   Vector cohesion0(pmesh->attributes.Max());
+   Vector cohesion1(pmesh->attributes.Max());
    Vector friction_angle(pmesh->attributes.Max());
    Vector dilation_angle(pmesh->attributes.Max());
+   Vector plastic_viscosity(pmesh->attributes.Max());
+   Vector pls0(pmesh->attributes.Max());
+   Vector pls1(pmesh->attributes.Max());
    tension_cutoff = 0.0;
-   cohesion = 1.0e6;
-   friction_angle = 10.0;
-   dilation_angle = 10.0;
+   cohesion0 = 44.0e6;
+   cohesion1 = 4.0e6;
+   friction_angle = 30.0;
+   dilation_angle = 0.0;
+   pls0 = 0.0;
+   pls1 = 0.5;
 
-   StressCoefficient stress_coef(dim, v_gf, lambda_func, mu_func);
-   s_gf.ProjectCoefficient(stress_coef);
+   if(viscoplastic)
+   {
+      plastic_viscosity = 1.0;
+   }
+   else
+   {
+      plastic_viscosity = 1.0e+300;
+   }
+   
+   // lithostatic pressure
    s_gf=0.0;
+   if(lithostatic)
+   {
+      LithostaticCoefficient Lithostatic_coeff(dim, y_gf_l2, z_gf_l2, rho0_gf, gravity, thickness);
+      s_gf.ProjectCoefficient(Lithostatic_coeff);
+   }   
    s_gf.SyncAliasMemory(S);
 
-   // Initializing plastic strain (J2 strain invariant)
-   FunctionCoefficient p_coeff(p0);
+   ParGridFunction s_old_gf(&L2FESpace_stress);
+   s_old_gf=0.0;
+   
+   // Initial geometry
+   x_ini_gf = x_gf; 
+   x_ini_gf.SyncAliasMemory(S);
+
+   // Plastic strain (J2 strain invariant)
+   ParGridFunction p_gf(&L2FESpace);
+   p_gf=0.0;
+   if(dim = 2){weak_location[0] = weak_x; weak_location[1] = weak_y;}
+   else if(dim =3){weak_location[0] = weak_x; weak_location[1] = weak_y; weak_location[2] = weak_y;}
+   PlasticCoefficient p_coeff(dim, x_gf_l2, y_gf_l2, z_gf_l2, weak_location, weak_rad, ini_pls);
    p_gf.ProjectCoefficient(p_coeff);
-   p_gf.SyncAliasMemory(S);
+
+   // Non-initial plastic strain
+   ParGridFunction ini_p_gf(&L2FESpace);
+   ParGridFunction n_p_gf(&L2FESpace);
+   ini_p_gf=p_gf; n_p_gf=0.0;
 
    ParGridFunction u_gf(&H1FESpace);  // Displacment
-   ParGridFunction x0_gf(&H1FESpace); // Initial mesh (reference configuration)
-   // Initialize x_gf using the starting mesh coordinates.
-   pmesh->SetNodalGridFunction(&x0_gf);
    u_gf = 0.0; 
 
    // L2_FECollection mat_fec(0, pmesh->Dimension());
@@ -775,36 +876,6 @@ int main(int argc, char *argv[])
    // ParGridFunction mat_gf(&mat_fes);
    // FunctionCoefficient mat_coeff(gamma_func);
    // mat_gf.ProjectCoefficient(mat_coeff);
-     
-   /*
-   // Initialize stress tensor
-   L2_FECollection sig_fec(order_e, pmesh->Dimension());
-   // ParFiniteElementSpace sig_fespace(pmesh, &sig_fec);
-   ParFiniteElementSpace sig_fespace(pmesh, &sig_fec, dim*dim);
-   ParGridFunction sigma_gf(&sig_fespace); 
-   StressCoefficient stress_coef(dim, v_gf, lambda_func, mu_func);
-   sigma_gf.ProjectCoefficient(stress_coef);
-   */
-
-   // Additional details, depending on the problem.
-   /*
-   DenseMatrix esig(dim);
-   DenseMatrix plastic_sig(dim);
-   DenseMatrix plastic_str(dim);
-   esig=0.0; plastic_sig=0.0; plastic_str=0.0;
-   double eig_sig_var[3], eig_sig_vec[9];
-
-   double sig1{0.0};
-   double sig3{0.0};
-
-   double fs{0.0};
-   double ft{0.0};
-   double fh{0.0};
-   double N_phi{0.0};
-   double st_N_phi{0.0};
-   double N_psi{0.0};
-   double beta{0.0};
-   */
    
    int source = 0; bool visc = false, vorticity = false;
    switch (problem)
@@ -827,8 +898,8 @@ int main(int argc, char *argv[])
                                                 mat_gf, source, cfl,
                                                 visc, vorticity, p_assembly,
                                                 cg_tol, cg_max_iter, ftz_tol,
-                                                order_q, lambda0_gf, mu0_gf, mscale, gravity, 
-                                                lambda, mu, tension_cutoff, cohesion, friction_angle, dilation_angle);
+                                                order_q, lambda0_gf, mu0_gf, mscale, gravity, thickness,
+                                                lambda, mu, tension_cutoff, cohesion0, friction_angle, dilation_angle, winkler_foundation);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
@@ -868,10 +939,12 @@ int main(int argc, char *argv[])
    if (visit)
    {
       visit_dc.RegisterField("Density",  &rho_gf);
+      visit_dc.RegisterField("Displacement", &u_gf);
       visit_dc.RegisterField("Velocity", &v_gf);
       visit_dc.RegisterField("Specific Internal Energy", &e_gf);
-      // visit_dc.RegisterField("stress xx", &mu_gf);
-      // visit_dc.RegisterField("stress yy", &lambda_gf);
+      visit_dc.RegisterField("Stress", &s_gf);
+      visit_dc.RegisterField("Plastic Strain", &p_gf);
+      visit_dc.RegisterField("Non-inital Plastic Strain", &n_p_gf);
       visit_dc.SetCycle(0);
       visit_dc.SetTime(0.0);
       visit_dc.Save();
@@ -888,6 +961,7 @@ int main(int argc, char *argv[])
       pd->RegisterField("Specific Internal Energy", &e_gf);
       pd->RegisterField("Stress", &s_gf);
       pd->RegisterField("Plastic Strain", &p_gf);
+      pd->RegisterField("Non-inital Plastic Strain", &n_p_gf);
       // pd->SetLevelsOfDetail(order);
       // pd->SetDataFormat(VTKFormat::BINARY);
       pd->SetDataFormat(VTKFormat::ASCII);
@@ -902,7 +976,7 @@ int main(int argc, char *argv[])
    // defines the Mult() method that used by the time integrators.
    ode_solver->Init(geo);
    geo.ResetTimeStepEstimate();
-   double t = 0.0, dt = 0.0, t_old;
+   double t = 0.0, dt = 0.0, t_old, dt_old = 0.0;
    dt = geo.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
    
    // dt = init_dt;
@@ -955,6 +1029,7 @@ int main(int argc, char *argv[])
       // to advance.
       ode_solver->Step(S, t, dt);
       steps++;
+      dt_old = dt;
 
       // Adaptive time step control.
       const double dt_est = geo.GetTimeStepEstimate(S, dt);
@@ -983,123 +1058,24 @@ int main(int argc, char *argv[])
       v_gf.SyncAliasMemory(S);
       e_gf.SyncAliasMemory(S);
       s_gf.SyncAliasMemory(S);
-      p_gf.SyncAliasMemory(S);
+      x_ini_gf.SyncAliasMemory(S);
 
-      // Returnmapping (s_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion, friction_angle, dilation_angle);
-      s_gf.SyncAliasMemory(S);
-
-      // for( int i = 0; i < Vsize_l2; i++ )
-      // {  
-      //    esig=0.0; plastic_sig=0.0; plastic_str=0.0;
-      //    double eig_sig_var[3], eig_sig_vec[9];
-      //    esig(0,0) = s_gf[i+Vsize_l2*0]; esig(0,1) = s_gf[i+Vsize_l2*3]; esig(0,2) = s_gf[i+Vsize_l2*4]; //
-      //    esig(1,0) = s_gf[i+Vsize_l2*3]; esig(1,1) = s_gf[i+Vsize_l2*1]; esig(1,2) = s_gf[i+Vsize_l2*5];
-      //    esig(2,0) = s_gf[i+Vsize_l2*4]; esig(2,1) = s_gf[i+Vsize_l2*5]; esig(2,2) = s_gf[i+Vsize_l2*2];
-
-      //    esig.CalcEigenvalues(eig_sig_var, eig_sig_vec);
-
-      //    Vector sig_var(eig_sig_var, dim);
-      //    Vector sig_dir(eig_sig_vec, dim);
-
-      //    // sig1 = sig_var.Min(); // most compressive 
-      //    // sig3 = sig_var.Max(); // least compressive
-
-      //    auto max_it = std::max_element(sig_var.begin(), sig_var.end()); // find iterator to max element
-      //    auto min_it = std::min_element(sig_var.begin(), sig_var.end()); // find iterator to max element
-         
-      //    int max_index = std::distance(sig_var.begin(), max_it); // calculate index of max element
-      //    int min_index = std::distance(sig_var.begin(), min_it); // calculate index of max element
-      //    int itm_index = 0; // calculate index of max element
-
-      //    if (max_index + min_index == 1) {itm_index = 2;}
-      //    else if(max_index + min_index == 2) {itm_index = 1;}
-      //    else {itm_index = 0;}
-
-      //    sig1 = sig_var[min_index];
-      //    sig3 = sig_var[max_index];
-
-      //    N_phi = (1+sin(M_PI*friction_angle[0]/180.0))/(1-sin(M_PI*friction_angle[0]/180.0));
-      //    st_N_phi = cos(M_PI*friction_angle[0]/180.0)/(1-sin(M_PI*friction_angle[0]/180.0));
-      //    N_psi = -1*(1+sin(M_PI*dilation_angle[0]/180.0))/(1-sin(M_PI*dilation_angle[0]/180.0));
-      //    // shear failure function
-      //    fs = sig1 - N_phi*sig3 + 2*cohesion[0]*st_N_phi;
-      //    // tension failure function
-      //    ft = sig3 - (cohesion[0]/tan(M_PI*friction_angle[i]/180.0));
-      //    // bisects the obtuse angle made by two yield function
-      //    fh = sig3 - tension_cutoff[0] + (sqrt(N_phi*N_phi + 1.0)+ N_phi)*(sig1 - N_phi*tension_cutoff[0] + 2*cohesion[0]*st_N_phi);
-
-      //    if(fs < 0 & fh < 0)
-      //    {
-      //       beta = fs;
-      //       beta = beta / (((lambda[0]+2*mu[0])*1 - N_phi*lambda[0]*1) + (lambda[0]*N_psi - N_phi*(lambda[0]+2*mu[0])*N_psi));
-
-      //       if(dim == 2)
-      //       {
-      //          plastic_str(0,0) = (lambda[0]+2*mu[0])*beta * 1; plastic_str(1,1) = (lambda[0]+2*mu[0]) * beta * N_psi;
-      //       }
-      //       else
-      //       {
-      //          plastic_str(0,0) = (lambda[0]+2*mu[0] + lambda[0]*N_psi) * beta; 
-      //          plastic_str(1,1) = (lambda[0] + lambda[0]*N_psi) * beta;
-      //          plastic_str(2,2) = (lambda[0] + (lambda[0]+2*mu[0])*N_psi) * beta;
-
-      //          // plastic_str(0,0) = (lambda[0]+2*mu[0]) * beta * 1; 
-      //          // plastic_str(2,2) = (lambda[0]+2*mu[0]) * beta * N_psi;
-      //       }
-      //    }
-      //    else if (ft > 0 & fh > 0)
-      //    {
-      //       beta = ft;
-      //       if(dim == 2)
-      //       {
-      //          plastic_str(1,1) = (lambda[0]+2*mu[0]) * beta * 1;
-      //       }
-      //       else
-      //       {
-      //          plastic_str(2,2) = (lambda[0]+2*mu[0]) * beta * 1;
-      //       }
-      //    }
-
-
-      //    // Rotating Principal axis to XYZ axis
-      //    if(dim == 2)
-      //    {
-      //       plastic_sig(0,0) = ((sig_var[0]-plastic_str(0,0))*sig_dir[0]*sig_dir[0] + (sig_var[1]-plastic_str(1,1))*sig_dir[2]*sig_dir[2]);
-      //       plastic_sig(0,1) = ((sig_var[0]-plastic_str(0,0))*sig_dir[0]*sig_dir[1] + (sig_var[1]-plastic_str(1,1))*sig_dir[2]*sig_dir[3]);
-      //       plastic_sig(1,0) = ((sig_var[0]-plastic_str(0,0))*sig_dir[1]*sig_dir[0] + (sig_var[1]-plastic_str(1,1))*sig_dir[3]*sig_dir[2]);
-      //       plastic_sig(1,1) = ((sig_var[0]-plastic_str(0,0))*sig_dir[1]*sig_dir[1] + (sig_var[1]-plastic_str(1,1))*sig_dir[3]*sig_dir[3]);
-      //    }
-      //    else
-      //    {
-      //       plastic_sig(0,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*3]*sig_dir[0+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[0+itm_index*3]*sig_dir[0+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[0+max_index*3]*sig_dir[0+max_index*3]);
-      //       plastic_sig(0,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*3]*sig_dir[1+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[0+itm_index*3]*sig_dir[1+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[0+max_index*3]*sig_dir[1+max_index*3]);
-      //       plastic_sig(0,2) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*3]*sig_dir[2+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[0+itm_index*3]*sig_dir[2+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[0+max_index*3]*sig_dir[2+max_index*3]);
-      //       plastic_sig(1,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*3]*sig_dir[0+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[1+itm_index*3]*sig_dir[0+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[1+max_index*3]*sig_dir[0+max_index*3]);
-      //       plastic_sig(1,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*3]*sig_dir[1+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[1+itm_index*3]*sig_dir[1+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[1+max_index*3]*sig_dir[1+max_index*3]);
-      //       plastic_sig(1,2) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*3]*sig_dir[2+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[1+itm_index*3]*sig_dir[2+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[1+max_index*3]*sig_dir[2+max_index*3]);
-      //       plastic_sig(2,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[2+min_index*3]*sig_dir[0+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[2+itm_index*3]*sig_dir[0+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[2+max_index*3]*sig_dir[0+max_index*3]);
-      //       plastic_sig(2,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[2+min_index*3]*sig_dir[1+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[2+itm_index*3]*sig_dir[1+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[2+max_index*3]*sig_dir[1+max_index*3]);
-      //       plastic_sig(2,2) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[2+min_index*3]*sig_dir[2+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[2+itm_index*3]*sig_dir[2+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[2+max_index*3]*sig_dir[2+max_index*3]);
-      //    }
-
-      //    // esig.Add(-1.0, plastic_sig); // Applying plastic stress correction.
-
-      //    s_gf[i+Vsize_l2*0]=plastic_sig(0,0); s_gf[i+Vsize_l2*3]=plastic_sig(0,1); s_gf[i+Vsize_l2*4]=plastic_sig(0,2); //
-      //    s_gf[i+Vsize_l2*3]=plastic_sig(1,0); s_gf[i+Vsize_l2*1]=plastic_sig(1,1); s_gf[i+Vsize_l2*5]=plastic_sig(1,2);
-      //    s_gf[i+Vsize_l2*4]=plastic_sig(2,0); s_gf[i+Vsize_l2*5]=plastic_sig(2,1); s_gf[i+Vsize_l2*2]=plastic_sig(2,2);
-
-      // }
-
-      
+      if(plastic)
+      {
+         Returnmapping (s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle, dilation_angle, plastic_viscosity, dt_old);
+         s_gf.SyncAliasMemory(S);
+         n_p_gf  = ini_p_gf;
+         n_p_gf -= p_gf;
+         n_p_gf.Neg();
+      }
+      s_old_gf = s_gf; // storing old Caushy stress
 
       // Adding stress increment to total stress and storing spin rate
       // Make sure that the mesh corresponds to the new solution state. This is
       // needed, because some time integrators use different S-type vectors
       // and the oper object might have redirected the mesh positions to those.
       pmesh->NewNodes(x_gf, false);
-      u_gf = x0_gf;
-      u_gf -= x_gf;
-      u_gf.Neg();
+      u_gf.Add(dt, v_gf);
 
       // geo.ComputeDensity(rho_gf);
       
@@ -1316,40 +1292,6 @@ int main(int argc, char *argv[])
    return 0;
 }
 
-double rho0(const Vector &x)
-{
-   return 2800.0; // This case in initialized in main().
-}
-
-double gamma_func(const Vector &x)
-{
-   return 1.0; // This case in initialized in main().
-}
-
-static double rad(double x, double y) { return sqrt(x*x + y*y); }
-
-void v0(const Vector &x, Vector &v)
-{
-   const double atn = dim!=1 ? pow((x(0)*(1.0-x(0))*4*x(1)*(1.0-x(1))*4.0),
-                                   0.4) : 0.0;
-   const double s = 0.1/64.;
-   v = 0.0;
-   if(x(0) == 1)
-   {
-      v(0)=-1e-5;
-   } 
-}
-
-double e0(const Vector &x)
-{
-   return 0.0; // This case in initialized in main().
-}
-
-double p0(const Vector &x)
-{
-   return 0.0; // This case in initialized in main().
-}
-
 static void display_banner(std::ostream &os)
 {
    os << endl
@@ -1423,154 +1365,5 @@ static void Checks(const int ti, const double nrm, int &chk)
          const double norm = it_norms[dim-2][p][i][1];
          check(p, it, norm);
       }
-   }
-}
-
-void Returnmapping (Vector &s_gf, Vector &p_gf, Vector &mat_gf, int &dim, Vector &lambda, Vector &mu, Vector &tension_cutoff, Vector &cohesion, Vector &friction_angle, Vector &dilation_angle) 
-{
-   DenseMatrix esig(3);
-   DenseMatrix plastic_sig(3);
-   DenseMatrix plastic_str(3);
-   esig=0.0; plastic_sig=0.0; plastic_str=0.0;
-   double eig_sig_var[3], eig_sig_vec[9];
-
-   double sig1{0.0};
-   double sig3{0.0};
-   double  syy{0.0}; // Syy is non-zero value in plane strain condition
-   double msig{0.0}; // mean stress
-   double evol{0.0}; // volumetric strain
-   double DEG2RAD{M_PI/180.0};
-   double depls{0.0}; // 2nd invariant of plastic strain
-
-   double fs{0.0};
-   double ft{0.0};
-   double fh{0.0};
-   double N_phi{0.0};
-   double st_N_phi{0.0};
-   double N_psi{0.0};
-   double beta{0.0};
-   int mat{0};
-   int nsize{mat_gf.Size()};
-
-   for( int i = 0; i < nsize; i++ )
-   {  
-         esig=0.0; plastic_sig=0.0; plastic_str=0.0;
-         double eig_sig_var[3], eig_sig_vec[9];
-
-         mat = mat_gf[i];
-
-          if(dim ==2) 
-         {
-            // 2D in plane strain condition
-            // sxx, syy, szz, sxz are non zeros.
-            // sxy, syz are zero.
-            msig = (s_gf[i+nsize*0] + s_gf[i+nsize*1])*0.5;
-            evol = msig/(lambda[mat]+mu[mat]);
-            syy  = evol * lambda[mat];
-            esig(0,0) = s_gf[i+nsize*0]; esig(0,1) = 0.0; esig(0,2) = s_gf[i+nsize*2]; 
-            esig(1,0) =             0,0; esig(1,1) = syy; esig(1,2) =             0.0;
-            esig(2,0) = s_gf[i+nsize*2]; esig(2,1) = 0.0; esig(2,2) = s_gf[i+nsize*1];
-         }
-         else
-         {
-            esig(0,0) = s_gf[i+nsize*0]; esig(0,1) = s_gf[i+nsize*3]; esig(0,2) = s_gf[i+nsize*4]; 
-            esig(1,0) = s_gf[i+nsize*3]; esig(1,1) = s_gf[i+nsize*1]; esig(1,2) = s_gf[i+nsize*5];
-            esig(2,0) = s_gf[i+nsize*4]; esig(2,1) = s_gf[i+nsize*5]; esig(2,2) = s_gf[i+nsize*2];
-         }
-         
-         esig.CalcEigenvalues(eig_sig_var, eig_sig_vec); 
-
-         Vector sig_var(eig_sig_var, 3);
-         Vector sig_dir(eig_sig_vec, 3);
-
-         auto max_it = std::max_element(sig_var.begin(), sig_var.end()); // find iterator to max element
-         auto min_it = std::min_element(sig_var.begin(), sig_var.end()); // find iterator to min element
-         
-         int max_index = std::distance(sig_var.begin(), max_it); // calculate index of max element
-         int min_index = std::distance(sig_var.begin(), min_it); // calculate index of min element
-         
-         int itm_index = 0; // calculate index of intermediate element
-         if (max_index + min_index == 1) {itm_index = 2;}
-         else if(max_index + min_index == 2) {itm_index = 1;}
-         else {itm_index = 0;}
-
-         sig1 = sig_var[min_index]; // most compressive pincipal stress
-         sig3 = sig_var[max_index]; // least compressive pincipal stress
-
-         N_phi = (1+sin(DEG2RAD*friction_angle[mat]))/(1-sin(DEG2RAD*friction_angle[mat]));
-         st_N_phi = cos(DEG2RAD*friction_angle[mat])/(1-sin(DEG2RAD*friction_angle[mat]));
-         N_psi = -1*(1+sin(DEG2RAD*dilation_angle[mat]))/(1-sin(DEG2RAD*dilation_angle[mat]));
-         // shear failure function
-         fs = sig1 - N_phi*sig3 + 2*cohesion[mat]*st_N_phi;
-         // tension failure function
-         ft = sig3 - (cohesion[mat]/tan(DEG2RAD*friction_angle[i]));
-         // bisects the obtuse angle made by two yield function
-         fh = sig3 - tension_cutoff[mat] + (sqrt(N_phi*N_phi + 1.0)+ N_phi)*(sig1 - N_phi*tension_cutoff[mat] + 2*cohesion[mat]*st_N_phi);
-
-         if(fs < 0 & fh < 0) // stress correction at shear failure
-         {
-            beta = fs;
-            beta = beta / (((lambda[mat]+2*mu[mat])*1 - N_phi*lambda[mat]*1) + (lambda[mat]*N_psi - N_phi*(lambda[mat]+2*mu[mat])*N_psi));
-
-            plastic_str(0,0) = (lambda[mat] + 2*mu[mat] + lambda[mat]*N_psi) * beta; 
-            plastic_str(1,1) = (lambda[mat] + lambda[mat]*N_psi) * beta;
-            plastic_str(2,2) = (lambda[mat] + (lambda[mat]+2*mu[mat])*N_psi) * beta;
-
-            // reduced form of 2nd invariant
-            if(dim ==2)
-            {
-               depls = std::fabs(beta) * std::sqrt((3 - 2*N_psi + 3*N_psi*N_psi) / 8); 
-            }
-            else
-            {
-               depls = std::fabs(beta) * std::sqrt((7 - 4*N_psi + 7*N_psi*N_psi) / 18);
-            }
-            
-         }
-         else if (ft > 0 & fh > 0) // stress correction at tension failure
-         {
-            beta = ft;
-            plastic_str(0,0) = (lambda[mat]+2*mu[mat]) * beta * 1;
-            plastic_str(1,1) = (lambda[mat]+2*mu[mat]) * beta * 1;
-            plastic_str(2,2) = lambda[mat] * beta * 1;
-
-            // reduced form of 2nd invariant
-            if(dim ==2)
-            {
-               depls = std::fabs(beta) * std::sqrt(3. / 8);
-            }
-            else
-            {
-               depls = std::fabs(beta) * std::sqrt(7. / 18);
-            }
-            
-         }
-
-         // Rotating Principal axis to XYZ axis
-         plastic_sig(0,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*3]*sig_dir[0+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[0+itm_index*3]*sig_dir[0+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[0+max_index*3]*sig_dir[0+max_index*3]);
-         plastic_sig(0,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*3]*sig_dir[1+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[0+itm_index*3]*sig_dir[1+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[0+max_index*3]*sig_dir[1+max_index*3]);
-         plastic_sig(0,2) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*3]*sig_dir[2+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[0+itm_index*3]*sig_dir[2+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[0+max_index*3]*sig_dir[2+max_index*3]);
-         plastic_sig(1,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*3]*sig_dir[0+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[1+itm_index*3]*sig_dir[0+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[1+max_index*3]*sig_dir[0+max_index*3]);
-         plastic_sig(1,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*3]*sig_dir[1+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[1+itm_index*3]*sig_dir[1+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[1+max_index*3]*sig_dir[1+max_index*3]);
-         plastic_sig(1,2) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*3]*sig_dir[2+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[1+itm_index*3]*sig_dir[2+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[1+max_index*3]*sig_dir[2+max_index*3]);
-         plastic_sig(2,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[2+min_index*3]*sig_dir[0+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[2+itm_index*3]*sig_dir[0+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[2+max_index*3]*sig_dir[0+max_index*3]);
-         plastic_sig(2,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[2+min_index*3]*sig_dir[1+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[2+itm_index*3]*sig_dir[1+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[2+max_index*3]*sig_dir[1+max_index*3]);
-         plastic_sig(2,2) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[2+min_index*3]*sig_dir[2+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[2+itm_index*3]*sig_dir[2+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[2+max_index*3]*sig_dir[2+max_index*3]);
-
-         // Updating new stress to grid function
-         if(dim ==2)
-         {
-            s_gf[i+nsize*0]=plastic_sig(0,0); s_gf[i+nsize*2]=plastic_sig(0,2);
-            s_gf[i+nsize*2]=plastic_sig(2,0); s_gf[i+nsize*1]=plastic_sig(2,2);
-         }
-         else
-         {
-            s_gf[i+nsize*0]=plastic_sig(0,0); s_gf[i+nsize*3]=plastic_sig(0,1); s_gf[i+nsize*4]=plastic_sig(0,2); 
-            s_gf[i+nsize*3]=plastic_sig(1,0); s_gf[i+nsize*1]=plastic_sig(1,1); s_gf[i+nsize*5]=plastic_sig(1,2);
-            s_gf[i+nsize*4]=plastic_sig(2,0); s_gf[i+nsize*5]=plastic_sig(2,1); s_gf[i+nsize*2]=plastic_sig(2,2);
-         }
-
-         // Adding 2nd invariant of plastic strain increment
-         p_gf[i] += depls;
    }
 }
