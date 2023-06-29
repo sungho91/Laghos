@@ -12,7 +12,7 @@
 ## Purpose
 
 **Laghost** (LAGrangian High-Order Solver for Tectnoics) solves the
-time-dependent Momentum Balance of geological media in a moving
+time-dependent momentum balance of geological media in a moving
 Lagrangian frame using unstructured high-order finite element spatial
 discretization and explicit high-order time-stepping.
 
