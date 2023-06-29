@@ -1,23 +1,22 @@
-               __                __
-              / /   ____  ____  / /_  ____  _____
-             / /   / __ `/ __ `/ __ \/ __ \/ ___/
-            / /___/ /_/ / /_/ / / / / /_/ (__  )
-           /_____/\__,_/\__, /_/ /_/\____/____/
-                       /____/
-
-        High-order Lagrangian Hydrodynamics Miniapp
+            __                __               __ 
+           / /   ____ _____ _/ /_  ____  _____/ /_
+          / /   / __ `/ __ `/ __ \/ __ \/ ___/ __/
+         / /___/ /_/ / /_/ / / / / /_/ (__  ) /_  
+        /_____/\__,_/\__, /_/ /_/\____/____/\__/  
+                    /____/                        
+        Lagrangian High-order Solver for Tectonics
 
 [![Build Status](https://travis-ci.org/CEED/Laghos.svg?branch=master)](https://travis-ci.org/CEED/Laghos)
 [![Build and Test (GH Actions)](https://github.com/CEED/Laghos/workflows/build-and-test-laghos/badge.svg?branch=master)](https://github.com/CEED/Laghos/actions?query=workflow%3Abuild-and-test-laghos)
 
 ## Purpose
 
-**Laghos** (LAGrangian High-Order Solver) is a miniapp that solves the
-time-dependent Euler equations of compressible gas dynamics in a moving
+**Laghost** (LAGrangian High-Order Solver for Tectnoics) solves the
+time-dependent Momentum Balance of geological media in a moving
 Lagrangian frame using unstructured high-order finite element spatial
 discretization and explicit high-order time-stepping.
 
-Laghos is based on the discretization method described in the following article:
+Laghost is based on the discretization method described in the following article:
 
 > V. Dobrev, Tz. Kolev and R. Rieben <br>
 > [High-order curvilinear finite element methods for Lagrangian hydrodynamics](https://doi.org/10.1137/120864672) <br>
