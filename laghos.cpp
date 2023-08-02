@@ -33,33 +33,24 @@
 //    methods for Lagrangian geodynamics", SIAM Journal on Scientific
 //    Computing, (34) 2012, pp. B606–B641, https://doi.org/10.1137/120864672.
 //
-// Test problems:
-//    p = 0  --> Taylor-Green vortex (smooth problem).
-//    p = 1  --> Sedov blast.
-//    p = 2  --> 1D Sod shock tube.
-//    p = 3  --> Triple point.
-//    p = 4  --> Gresho vortex (smooth problem).
-//    p = 5  --> 2D Riemann problem, config. 12 of doi.org/10.1002/num.10025
-//    p = 6  --> 2D Riemann problem, config.  6 of doi.org/10.1002/num.10025
-//    p = 7  --> 2D Rayleigh-Taylor instability problem.
+//                     __                __               __ 
+//                    / /   ____ _____ _/ /_  ____  _____/ /_
+//                   / /   / __ `/ __ `/ __ \/ __ \/ ___/ __/
+//                  / /___/ /_/ / /_/ / / / / /_/ (__  ) /_  
+//                 /_____/\__,_/\__, /_/ /_/\____/____/\__/  
+//                             /____/                        
+//             Lagrangian High-order Solver for Tectonics
 //
-// Sample runs: see README.md, section 'Verification of Results'.
+// Laghost inherits the main structure of LAGHOS. However, it solves
+// the dynamic form of the general momenntum balance equation for continnum,
+// aquiring quasi-static solution with dynamic relaxation; reasonably large
+// time steps with mass scaling. The target applications include long-term 
+// brittle and ductile deformations of rocks coupled with time-evolving 
+// thermal state.
 //
-// Combinations resulting in 3D uniform Cartesian MPI partitionings of the mesh:
-// -m data/cube01_hex.mesh   -pt 211 for  2 / 16 / 128 / 1024 ... tasks.
-// -m data/cube_922_hex.mesh -pt 921 for    / 18 / 144 / 1152 ... tasks.
-// -m data/cube_522_hex.mesh -pt 522 for    / 20 / 160 / 1280 ... tasks.
-// -m data/cube_12_hex.mesh  -pt 311 for  3 / 24 / 192 / 1536 ... tasks.
-// -m data/cube01_hex.mesh   -pt 221 for  4 / 32 / 256 / 2048 ... tasks.
-// -m data/cube_922_hex.mesh -pt 922 for    / 36 / 288 / 2304 ... tasks.
-// -m data/cube_522_hex.mesh -pt 511 for  5 / 40 / 320 / 2560 ... tasks.
-// -m data/cube_12_hex.mesh  -pt 321 for  6 / 48 / 384 / 3072 ... tasks.
-// -m data/cube01_hex.mesh   -pt 111 for  8 / 64 / 512 / 4096 ... tasks.
-// -m data/cube_922_hex.mesh -pt 911 for  9 / 72 / 576 / 4608 ... tasks.
-// -m data/cube_522_hex.mesh -pt 521 for 10 / 80 / 640 / 5120 ... tasks.
-// -m data/cube_12_hex.mesh  -pt 322 for 12 / 96 / 768 / 6144 ... tasks.
-// mpirun -np 8 laghos -p 1 -fa -dim 2 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh2d.mesh 2D beam (80 * 10 km2)
-// mpirun -np 8 laghos -p 1 -fa -dim 2 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh3d.mesh 3D beam (80 * 10 * 10 km3)
+// -- How to run LAGHOST
+// mpirun -np 8 laghost -fa -dim 2 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh2d.mesh
+// mpirun -np 8 laghost -fa -dim 3 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh3d.mesh
 
 #include <fstream>
 #include <sys/time.h>
@@ -68,6 +59,8 @@
 #include "laghos_rheology.hpp"
 #include "laghos_function.hpp"
 #include <cmath>
+#include "parameters.hpp"
+#include "input.hpp"
 
 using std::cout;
 using std::endl;
@@ -88,56 +81,14 @@ int main(int argc, char *argv[])
    // Print the banner.
    if (mpi.Root()) { display_banner(cout); }
 
-   // Parse command-line options.
-   problem = 1;
-   dim = 3;
-   const char *mesh_file = "default";
-   int rs_levels = 2;
-   int rp_levels = 0;
-   Array<int> cxyz;
-   int order_v = 2;
-   int order_e = 1;
-   // int order_q = 3;
-   int order_q = -1;
-   int ode_solver_type = 7;
-   double t_final = 1.0;
-   double cfl = 0.5;
-   double cg_tol = 1e-13;
-   double ftz_tol = 0.0;
-   int cg_max_iter = 1000;
-   int max_tsteps = -1;
-   bool p_assembly = false;
-   bool impose_visc = true;
-   bool visualization = false;
-   int vis_steps = 1000;
-   bool visit = false;
-   bool paraview = true;
-   bool gfprint = false;
-   const char *basename = "results/Laghos";
-   int partition_type = 0;
-   const char *device = "cpu";
-   bool check = false;
-   bool mem_usage = false;
-   bool fom = false;
-   bool gpu_aware_mpi = false;
-   int dev = 0;
-   bool year = true;
-   bool winkler_foundation = false;
-   bool lithostatic = true;
-   double init_dt = 1.0;
-   double mscale  = 1.0e16;
-   double gravity = 10.0; // magnitude 
-   double thickness = 10.0e3; // meter 
-   double winkler_rho = 2700.0; // Density of substratum
-   // Plasticity and Weakzone
-   bool plastic = true;
-   bool viscoplastic = false;
-   double weak_rad = 1.0e3; // circular weakzone
-   double weak_x = 50.0e3; // x coord of circular
-   double weak_y = 2.00e3; // y coord of circular
-   double weak_z = 0.00e3; // z coord of circular
-   double ini_pls = 0.5;   // initial plasticity
-   Vector weak_location(dim);
+   OptionsParser args(argc, argv);
+   const char *input_parameter_file = "./defaults.cfg";
+   args.AddOption(&input_parameter_file, "-i", "--input", "Input parameter file to use.");
+
+   Param param;
+   get_input_parameters(input_parameter_file, param);
+   
+   Array<int> cxyz; // Leave undefined. It won't be used.
    // double init_dt = 1e-1;
    double blast_energy = 0.0;
    // double blast_energy = 1.0e-6;
@@ -145,58 +96,43 @@ int main(int argc, char *argv[])
    // double blast_energy2 = 0.1;
    // double blast_position2[] = {8.0, 0.5};
 
-   OptionsParser args(argc, argv);
-   args.AddOption(&dim, "-dim", "--dimension", "Dimension of the problem.");
-   args.AddOption(&mesh_file, "-m", "--mesh", "Mesh file to use.");
-   args.AddOption(&rs_levels, "-rs", "--refine-serial",
-                  "Number of times to refine the mesh uniformly in serial.");
-   args.AddOption(&rp_levels, "-rp", "--refine-parallel",
-                  "Number of times to refine the mesh uniformly in parallel.");
-   args.AddOption(&cxyz, "-c", "--cartesian-partitioning",
-                  "Use Cartesian partitioning.");
-   args.AddOption(&problem, "-p", "--problem", "Problem setup to use.");
-   args.AddOption(&order_v, "-ok", "--order-kinematic",
-                  "Order (degree) of the kinematic finite element space.");
-   args.AddOption(&order_e, "-ot", "--order-thermo",
-                  "Order (degree) of the thermodynamic finite element space.");
-   args.AddOption(&order_q, "-oq", "--order-intrule",
-                  "Order  of the integration rule.");
-   args.AddOption(&ode_solver_type, "-s", "--ode-solver",
-                  "ODE solver: 1 - Forward Euler,\n\t"
-                  "            2 - RK2 SSP, 3 - RK3 SSP, 4 - RK4, 6 - RK6,\n\t"
-                  "            7 - RK2Avg.");
-   args.AddOption(&t_final, "-tf", "--t-final",
+   // Let some options be overwritten by command-line options.
+   args.AddOption(&param.sim.dim, "-dim", "--dimension", "Dimension of the problem.");
+   args.AddOption(&param.sim.t_final, "-tf", "--t-final",
                   "Final time; start time is 0.");
-   args.AddOption(&cfl, "-cfl", "--cfl", "CFL-condition number.");
-   args.AddOption(&cg_tol, "-cgt", "--cg-tol",
-                  "Relative CG tolerance (velocity linear solve).");
-   args.AddOption(&ftz_tol, "-ftz", "--ftz-tol",
-                  "Absolute flush-to-zero tolerance.");
-   args.AddOption(&cg_max_iter, "-cgm", "--cg-max-steps",
-                  "Maximum number of CG iterations (velocity linear solve).");
-   args.AddOption(&max_tsteps, "-ms", "--max-steps",
+   args.AddOption(&param.sim.max_tsteps, "-ms", "--max-steps",
                   "Maximum number of steps (negative means no restriction).");
-   args.AddOption(&p_assembly, "-pa", "--partial-assembly", "-fa",
-                  "--full-assembly",
-                  "Activate 1D tensor-based assembly (partial assembly).");
-   args.AddOption(&impose_visc, "-iv", "--impose-viscosity", "-niv",
-                  "--no-impose-viscosity",
-                  "Use active viscosity terms even for smooth problems.");
-   args.AddOption(&visualization, "-vis", "--visualization", "-no-vis",
+   args.AddOption(&param.sim.visualization, "-vis", "--visualization", "-no-vis",
                   "--no-visualization",
                   "Enable or disable GLVis visualization.");
-   args.AddOption(&vis_steps, "-vs", "--visualization-steps",
+   args.AddOption(&param.sim.vis_steps, "-vs", "--visualization-steps",
                   "Visualize every n-th timestep.");
-   args.AddOption(&visit, "-visit", "--visit", "-no-visit", "--no-visit",
+   args.AddOption(&param.sim.visit, "-visit", "--visit", "-no-visit", "--no-visit",
                   "Enable or disable VisIt visualization.");
-   args.AddOption(&paraview, "-paraview", "--paraview-datafiles", "-no-paraview",
+   args.AddOption(&param.sim.paraview, "-paraview", "--paraview-datafiles", "-no-paraview",
                   "--no-paraview-datafiles",
                   "Save data files for ParaView (paraview.org) visualization.");
-   args.AddOption(&gfprint, "-print", "--print", "-no-print", "--no-print",
+   args.AddOption(&param.sim.gfprint, "-print", "--print", "-no-print", "--no-print",
                   "Enable or disable result output (files in mfem format).");
-   args.AddOption(&basename, "-k", "--outputfilename",
-                  "Name of the visit dump files");
-   args.AddOption(&partition_type, "-pt", "--partition",
+   // args.AddOption(param.sim.basename.c_str(), "-k", "--outputfilename",
+   //                "Name of the visit dump files");
+   // args.AddOption(param.sim.device.c_str(), "-d", "--device",
+   //                "Device configuration string, see Device::Configure().");
+   args.AddOption(&param.sim.dev, "-dev", "--dev", "GPU device to use.");
+   args.AddOption(&param.sim.check, "-chk", "--checks", "-no-chk", "--no-checks",
+                  "Enable 2D checks.");
+   args.AddOption(&param.sim.mem_usage, "-mb", "--mem", "-no-mem", "--no-mem",
+                  "Enable memory usage.");
+   args.AddOption(&param.sim.fom, "-f", "--fom", "-no-fom", "--no-fom",
+                  "Enable figure of merit output.");
+   args.AddOption(&param.sim.gpu_aware_mpi, "-gam", "--gpu-aware-mpi", "-no-gam",
+                  "--no-gpu-aware-mpi", "Enable GPU aware MPI communications.");                      
+   // args.AddOption(&param.mesh.mesh_file, "-m", "--mesh", "Mesh file to use.");
+   args.AddOption(&param.mesh.rs_levels, "-rs", "--refine-serial",
+                  "Number of times to refine the mesh uniformly in serial.");
+   args.AddOption(&param.mesh.rp_levels, "-rp", "--refine-parallel",
+                  "Number of times to refine the mesh uniformly in parallel.");
+   args.AddOption(&param.mesh.partition_type, "-pt", "--partition",
                   "Customized x/y/z Cartesian MPI partitioning of the serial mesh.\n\t"
                   "Here x,y,z are relative task ratios in each direction.\n\t"
                   "Example: with 48 mpi tasks and -pt 321, one would get a Cartesian\n\t"
@@ -204,19 +140,32 @@ int main(int argc, char *argv[])
                   "NOTE: the serially refined mesh must have the appropriate number\n\t"
                   "of zones in each direction, e.g., the number of zones in direction x\n\t"
                   "must be divisible by the number of MPI tasks in direction x.\n\t"
-                  "Available options: 11, 21, 111, 211, 221, 311, 321, 322, 432.");
-   args.AddOption(&device, "-d", "--device",
-                  "Device configuration string, see Device::Configure().");
-   args.AddOption(&check, "-chk", "--checks", "-no-chk", "--no-checks",
-                  "Enable 2D checks.");
-   args.AddOption(&mem_usage, "-mb", "--mem", "-no-mem", "--no-mem",
-                  "Enable memory usage.");
-   args.AddOption(&fom, "-f", "--fom", "-no-fom", "--no-fom",
-                  "Enable figure of merit output.");
-   args.AddOption(&gpu_aware_mpi, "-gam", "--gpu-aware-mpi", "-no-gam",
-                  "--no-gpu-aware-mpi", "Enable GPU aware MPI communications.");
-   args.AddOption(&dev, "-dev", "--dev", "GPU device to use.");
+                  "Available options: 11, 21, 111, 211, 221, 311, 321, 322, 432.");                  
+   args.AddOption(&param.mesh.order_v, "-ok", "--order-kinematic",
+                  "Order (degree) of the kinematic finite element space.");
+   args.AddOption(&param.mesh.order_e, "-ot", "--order-thermo",
+                  "Order (degree) of the thermodynamic finite element space.");
+   args.AddOption(&param.mesh.order_q, "-oq", "--order-intrule",
+                  "Order  of the integration rule.");
+   args.AddOption(&param.solver.ode_solver_type, "-s", "--ode-solver",
+                  "ODE solver: 1 - Forward Euler,\n\t"
+                  "            2 - RK2 SSP, 3 - RK3 SSP, 4 - RK4, 6 - RK6,\n\t"
+                  "            7 - RK2Avg.");
+   args.AddOption(&param.solver.cfl, "-cfl", "--cfl", "CFL-condition number.");
+   args.AddOption(&param.solver.cg_tol, "-cgt", "--cg-tol",
+                  "Relative CG tolerance (velocity linear solve).");
+   args.AddOption(&param.solver.ftz_tol, "-ftz", "--ftz-tol",
+                  "Absolute flush-to-zero tolerance.");
+   args.AddOption(&param.solver.cg_max_iter, "-cgm", "--cg-max-steps",
+                  "Maximum number of CG iterations (velocity linear solve).");
+   args.AddOption(&param.solver.p_assembly, "-pa", "--partial-assembly", "-fa",
+                  "--full-assembly",
+                  "Activate 1D tensor-based assembly (partial assembly).");
+   args.AddOption(&param.solver.impose_visc, "-iv", "--impose-viscosity", "-niv",
+                  "--no-impose-viscosity",
+                  "Use active viscosity terms even for smooth problems.");
    args.Parse();
+
    if (!args.Good())
    {
       if (mpi.Root()) { args.PrintUsage(cout); }
@@ -224,13 +173,13 @@ int main(int argc, char *argv[])
    }
    if (mpi.Root()) { args.PrintOptions(cout); }
    
-   if(max_tsteps > -1)
+   if(param.sim.max_tsteps > -1)
    {
-      t_final = 1.0e38;
+      param.sim.t_final = 1.0e38;
    }   
-   if(year)
+   if(param.sim.year)
    {
-      t_final = t_final * 86400 * 365.25;
+      param.sim.t_final = param.sim.t_final * 86400 * 365.25;
       
       if (mpi.Root())
       {
@@ -249,27 +198,27 @@ int main(int argc, char *argv[])
 
    // Configure the device from the command line options
    Device backend;
-   backend.Configure(device, dev);
+   backend.Configure(param.sim.device, param.sim.dev);
    if (mpi.Root()) { backend.Print(); }
-   backend.SetGPUAwareMPI(gpu_aware_mpi);
+   backend.SetGPUAwareMPI(param.sim.gpu_aware_mpi);
 
    // On all processors, use the default builtin 1D/2D/3D mesh or read the
    // serial one given on the command line.
    Mesh *mesh;
 
-   if (strncmp(mesh_file, "default", 7) != 0)
+   if (param.mesh.mesh_file.compare("default") != 0)
    {
-      mesh = new Mesh(mesh_file, true, true);
+      mesh = new Mesh(param.mesh.mesh_file.c_str(), true, true);
    }
    else
    {
-      if (dim == 1)
+      if (param.sim.dim == 1)
       {
          mesh = new Mesh(Mesh::MakeCartesian1D(2));
          mesh->GetBdrElement(0)->SetAttribute(1);
          mesh->GetBdrElement(1)->SetAttribute(1);
       }
-      if (dim == 2)
+      if (param.sim.dim == 2)
       {
          mesh = new Mesh(Mesh::MakeCartesian2D(2, 2, Element::QUADRILATERAL,
                                                true));
@@ -282,7 +231,7 @@ int main(int argc, char *argv[])
             bel->SetAttribute(attr);
          }
       }
-      if (dim == 3)
+      if (param.sim.dim == 3)
       {
          mesh = new Mesh(Mesh::MakeCartesian3D(2, 2, 2, Element::HEXAHEDRON,
                                                true));
@@ -298,9 +247,9 @@ int main(int argc, char *argv[])
    dim = mesh->Dimension();
 
    // 1D vs partial assembly sanity check.
-   if (p_assembly && dim == 1)
+   if (param.solver.p_assembly && dim == 1)
    {
-      p_assembly = false;
+      param.solver.p_assembly = false;
       if (mpi.Root())
       {
          cout << "Laghos does not support PA in 1D. Switching to FA." << endl;
@@ -308,7 +257,7 @@ int main(int argc, char *argv[])
    }
 
    // Refine the mesh in serial to increase the resolution.
-   for (int lev = 0; lev < rs_levels; lev++) { mesh->UniformRefinement(); }
+   for (int lev = 0; lev < param.mesh.rs_levels; lev++) { mesh->UniformRefinement(); }
 
    // Local refiement
    Array<int> refs;
@@ -355,7 +304,7 @@ int main(int argc, char *argv[])
    ParMesh *pmesh = nullptr;
    const int num_tasks = mpi.WorldSize(); int unit = 1;
    int *nxyz = new int[dim];
-   switch (partition_type)
+   switch (param.mesh.partition_type)
    {
       case 0:
          for (int d = 0; d < dim; d++) { nxyz[d] = unit; }
@@ -436,7 +385,7 @@ int main(int argc, char *argv[])
       default:
          if (myid == 0)
          {
-            cout << "Unknown partition type: " << partition_type << '\n';
+            cout << "Unknown partition type: " << param.mesh.partition_type << '\n';
          }
          delete mesh;
          MPI_Finalize();
@@ -482,7 +431,7 @@ int main(int argc, char *argv[])
    delete mesh;
 
    // Refine the mesh further in parallel to increase the resolution.
-   for (int lev = 0; lev < rp_levels; lev++) { pmesh->UniformRefinement(); }
+   for (int lev = 0; lev < param.mesh.rp_levels; lev++) { pmesh->UniformRefinement(); }
 
    int NE = pmesh->GetNE(), ne_min, ne_max;
    MPI_Reduce(&NE, &ne_min, 1, MPI_INT, MPI_MIN, 0, pmesh->GetComm());
@@ -493,8 +442,8 @@ int main(int argc, char *argv[])
    // Define the parallel finite element spaces. We use:
    // - H1 (Gauss-Lobatto, continuous) for position and velocity.
    // - L2 (Bernstein, discontinuous) for specific internal energy.
-   L2_FECollection L2FEC(order_e, dim, BasisType::Positive);
-   H1_FECollection H1FEC(order_v, dim);
+   L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::Positive);
+   H1_FECollection H1FEC(param.mesh.order_v, dim);
    ParFiniteElementSpace L2FESpace(pmesh, &L2FEC);
    ParFiniteElementSpace H1FESpace(pmesh, &H1FEC, pmesh->Dimension());
    ParFiniteElementSpace L2FESpace_stress(pmesh, &L2FEC, 3*(dim-1)); // three varibles for 2D, six varibles for 3D
@@ -618,7 +567,7 @@ int main(int argc, char *argv[])
 
    // Define the explicit ODE solver used for time integration.
    ODESolver *ode_solver = NULL;
-   switch (ode_solver_type)
+   switch (param.solver.ode_solver_type)
    {
       case 1: ode_solver = new ForwardEulerSolver; break;
       case 2: ode_solver = new RK2Solver(0.5); break;
@@ -629,7 +578,7 @@ int main(int argc, char *argv[])
       default:
          if (myid == 0)
          {
-            cout << "Unknown ODE solver type: " << ode_solver_type << '\n';
+            cout << "Unknown ODE solver type: " << param.solver.ode_solver_type << '\n';
          }
          delete pmesh;
          MPI_Finalize();
@@ -735,14 +684,14 @@ int main(int argc, char *argv[])
    // this density is a temporary function and it will not be updated during the
    // time evolution.
    Vector z_rho(pmesh->attributes.Max());
-   z_rho = 2700;
+   z_rho = 2700.0;
    Vector s_rho(pmesh->attributes.Max());
-   s_rho = 2700*mscale;
+   s_rho = 2700.0 * param.control.mscale;
 
    ParGridFunction rho0_gf(&L2FESpace);
    PWConstCoefficient rho0_coeff(z_rho);
    PWConstCoefficient scale_rho0_coeff(s_rho);
-   L2_FECollection l2_fec(order_e, pmesh->Dimension());
+   L2_FECollection l2_fec(param.mesh.order_e, pmesh->Dimension());
    ParFiniteElementSpace l2_fes(pmesh, &l2_fec);
    ParGridFunction l2_rho0_gf(&l2_fes), l2_e(&l2_fes);
    l2_rho0_gf.ProjectCoefficient(rho0_coeff);
@@ -759,7 +708,7 @@ int main(int argc, char *argv[])
    rho0_gf.ProjectGridFunction(l2_rho0_gf);
    */
    
-   if (problem == 1)
+   if (param.sim.problem == 1)
    {
       // For the Sedov test, we use a delta function at the origin.
       DeltaCoefficient e_coeff(blast_position[0], blast_position[1],
@@ -779,22 +728,24 @@ int main(int argc, char *argv[])
    // Piecewise constant elastic stiffness over the Lagrangian mesh.
    // Lambda and Mu is Lame's first and second constants
    Vector lambda(pmesh->attributes.Max());
+   lambda = param.mat.lambda;
    // lambda = 50e9-30e9*(2.0/3.0);
-   lambda = 30e9;
+   // lambda = 30e9;
    // lambda = 1.0e6;
    PWConstCoefficient lambda_func(lambda);
    Vector mu(pmesh->attributes.Max());
+   mu = param.mat.mu;
    // mu = 1.0e6;
-   mu = 30e9;
+   // mu = 30e9;
    PWConstCoefficient mu_func(mu);
    
    // Project PWConstCoefficient to grid function
-   L2_FECollection lambda_fec(order_e, pmesh->Dimension());
+   L2_FECollection lambda_fec(param.mesh.order_e, pmesh->Dimension());
    ParFiniteElementSpace lambda_fes(pmesh, &lambda_fec);
    ParGridFunction lambda0_gf(&lambda_fes);
    lambda0_gf.ProjectCoefficient(lambda_func);
    
-   L2_FECollection mu_fec(order_e, pmesh->Dimension());
+   L2_FECollection mu_fec(param.mesh.order_e, pmesh->Dimension());
    ParFiniteElementSpace mu_fes(pmesh, &mu_fec);
    ParGridFunction mu0_gf(&mu_fes);
    mu0_gf.ProjectCoefficient(mu_func);
@@ -808,7 +759,7 @@ int main(int argc, char *argv[])
    PWConstCoefficient mat_func(mat);
 
    // Project PWConstCoefficient to grid function
-   L2_FECollection mat_fec(order_e, pmesh->Dimension());
+   L2_FECollection mat_fec(param.mesh.order_e, pmesh->Dimension());
    ParFiniteElementSpace mat_fes(pmesh, &mat_fec);
    ParGridFunction mat_gf(&mat_fes);
    mat_gf.ProjectCoefficient(mat_func);
@@ -822,17 +773,16 @@ int main(int argc, char *argv[])
    Vector plastic_viscosity(pmesh->attributes.Max());
    Vector pls0(pmesh->attributes.Max());
    Vector pls1(pmesh->attributes.Max());
-   tension_cutoff = 0.0;
-   cohesion0 = 44.0e6;
-   cohesion1 = 4.0e6;
-   friction_angle = 30.0;
-   dilation_angle = 0.0;
-   pls0 = 0.0;
-   pls1 = 0.5;
-
-   if(viscoplastic)
+   tension_cutoff = param.mat.tension_cutoff;
+   cohesion0 = param.mat.cohesion0;
+   cohesion1 = param.mat.cohesion1;
+   friction_angle = param.mat.friction_angle;
+   dilation_angle = param.mat.dilation_angle;
+   pls0 = param.mat.pls0;
+   pls1 = param.mat.pls1;
+   if(param.mat.viscoplastic)
    {
-      plastic_viscosity = 1.0;
+      plastic_viscosity = param.mat.plastic_viscosity;
    }
    else
    {
@@ -841,9 +791,9 @@ int main(int argc, char *argv[])
    
    // lithostatic pressure
    s_gf=0.0;
-   if(lithostatic)
+   if(param.control.lithostatic)
    {
-      LithostaticCoefficient Lithostatic_coeff(dim, y_gf_l2, z_gf_l2, rho0_gf, gravity, thickness);
+      LithostaticCoefficient Lithostatic_coeff(dim, y_gf_l2, z_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
       s_gf.ProjectCoefficient(Lithostatic_coeff);
    }   
    s_gf.SyncAliasMemory(S);
@@ -858,9 +808,10 @@ int main(int argc, char *argv[])
    // Plastic strain (J2 strain invariant)
    ParGridFunction p_gf(&L2FESpace);
    p_gf=0.0;
-   if(dim = 2){weak_location[0] = weak_x; weak_location[1] = weak_y;}
-   else if(dim =3){weak_location[0] = weak_x; weak_location[1] = weak_y; weak_location[2] = weak_y;}
-   PlasticCoefficient p_coeff(dim, x_gf_l2, y_gf_l2, z_gf_l2, weak_location, weak_rad, ini_pls);
+   Vector weak_location(dim);
+   if(dim = 2){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y;}
+   else if(dim =3){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y; weak_location[2] = param.mat.weak_z;}
+   PlasticCoefficient p_coeff(dim, x_gf_l2, y_gf_l2, z_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);
    p_gf.ProjectCoefficient(p_coeff);
 
    // Non-initial plastic strain
@@ -878,7 +829,7 @@ int main(int argc, char *argv[])
    // mat_gf.ProjectCoefficient(mat_coeff);
    
    int source = 0; bool visc = false, vorticity = false;
-   switch (problem)
+   switch (param.sim.problem)
    {
       case 0: if (pmesh->Dimension() == 2) { source = 1; } visc = false; break;
       case 1: visc = true; break;
@@ -890,27 +841,28 @@ int main(int argc, char *argv[])
       case 7: source = 2; visc = true; vorticity = true;  break;
       default: MFEM_ABORT("Wrong problem specification!");
    }
-   if (impose_visc) { visc = true; }
+   if (param.solver.impose_visc) { visc = true; }
 
    geodynamics::LagrangianGeoOperator geo(S.Size(),
-                                                H1FESpace, L2FESpace, L2FESpace_stress, ess_tdofs,
-                                                rho0_coeff, scale_rho0_coeff, rho0_gf,
-                                                mat_gf, source, cfl,
-                                                visc, vorticity, p_assembly,
-                                                cg_tol, cg_max_iter, ftz_tol,
-                                                order_q, lambda0_gf, mu0_gf, mscale, gravity, thickness,
-                                                lambda, mu, tension_cutoff, cohesion0, friction_angle, dilation_angle, winkler_foundation);
+                                          H1FESpace, L2FESpace, L2FESpace_stress, ess_tdofs,
+                                          rho0_coeff, scale_rho0_coeff, rho0_gf,
+                                          mat_gf, source, param.solver.cfl,
+                                          visc, vorticity, param.solver.p_assembly,
+                                          param.solver.cg_tol, param.solver.cg_max_iter, 
+                                          param.solver.ftz_tol,
+                                          param.mesh.order_q, lambda0_gf, mu0_gf, param.control.mscale, param.control.gravity, param.control.thickness,
+                                          lambda, mu, tension_cutoff, cohesion0, friction_angle, dilation_angle, param.control.winkler_foundation);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
    int  visport   = 19916;
 
    ParGridFunction rho_gf;
-   if (visualization || visit || paraview) { geo.ComputeDensity(rho_gf); }
+   if (param.sim.visualization || param.sim.visit || param.sim.paraview) { geo.ComputeDensity(rho_gf); }
    const double energy_init = geo.InternalEnergy(e_gf) +
                               geo.KineticEnergy(v_gf);
 
-   if (visualization)
+   if (param.sim.visualization)
    {
       // Make sure all MPI ranks have sent their 'v' solution before initiating
       // another set of GLVis connections (one from each rank):
@@ -921,7 +873,7 @@ int main(int argc, char *argv[])
       int Wx = 0, Wy = 0; // window position
       const int Ww = 350, Wh = 350; // window size
       int offx = Ww+10; // window offsets
-      if (problem != 0 && problem != 4)
+      if (param.sim.problem != 0 && param.sim.problem != 4)
       {
          geodynamics::VisualizeField(vis_rho, vishost, visport, rho_gf,
                                        "Density", Wx, Wy, Ww, Wh);
@@ -935,8 +887,8 @@ int main(int argc, char *argv[])
    }
 
    // Save data for VisIt visualization.
-   VisItDataCollection visit_dc(basename, pmesh);
-   if (visit)
+   VisItDataCollection visit_dc(param.sim.basename, pmesh);
+   if (param.sim.visit)
    {
       visit_dc.RegisterField("Density",  &rho_gf);
       visit_dc.RegisterField("Displacement", &u_gf);
@@ -951,9 +903,9 @@ int main(int argc, char *argv[])
    }
 
    ParaViewDataCollection *pd = NULL;
-   if (paraview)
+   if (param.sim.paraview)
    {
-      pd = new ParaViewDataCollection(basename, pmesh);
+      pd = new ParaViewDataCollection(param.sim.basename, pmesh);
       pd->SetPrefixPath("ParaView");
       pd->RegisterField("Density",  &rho_gf);
       pd->RegisterField("Displacement", &u_gf);
@@ -1015,12 +967,12 @@ int main(int argc, char *argv[])
 
    for (int ti = 1; !last_step; ti++)
    {
-      if (t + dt >= t_final)
+      if (t + dt >= param.sim.t_final)
       {
-         dt = t_final - t;
+         dt = param.sim.t_final - t;
          last_step = true;
       }
-      if (steps == max_tsteps) { last_step = true; }
+      if (steps == param.sim.max_tsteps) { last_step = true; }
       S_old = S;
       t_old = t;
       geo.ResetTimeStepEstimate();
@@ -1046,7 +998,7 @@ int main(int argc, char *argv[])
          S = S_old;
          geo.ResetQuadratureData();
          // if (mpi.Root()) { cout << "Repeating step " << ti << endl; }
-         if (steps < max_tsteps) { last_step = false; }
+         if (steps < param.sim.max_tsteps) { last_step = false; }
          ti--; continue;
       }
       else if (dt_est > 1.25 * dt) { dt *= 1.02; }
@@ -1060,7 +1012,7 @@ int main(int argc, char *argv[])
       s_gf.SyncAliasMemory(S);
       x_ini_gf.SyncAliasMemory(S);
 
-      if(plastic)
+      if(param.mat.plastic)
       {
          Returnmapping (s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle, dilation_angle, plastic_viscosity, dt_old);
          s_gf.SyncAliasMemory(S);
@@ -1079,11 +1031,11 @@ int main(int argc, char *argv[])
 
       // geo.ComputeDensity(rho_gf);
       
-      if (last_step || (ti % vis_steps) == 0)
+      if (last_step || (ti % param.sim.vis_steps) == 0)
       {
          double lnorm = e_gf * e_gf, norm;
          MPI_Allreduce(&lnorm, &norm, 1, MPI_DOUBLE, MPI_SUM, pmesh->GetComm());
-         if (mem_usage)
+         if (param.sim.mem_usage)
          {
             mem = GetMaxRssMB();
             MPI_Reduce(&mem, &mmax, 1, MPI_LONG, MPI_MAX, 0, pmesh->GetComm());
@@ -1091,7 +1043,7 @@ int main(int argc, char *argv[])
          }
          const double internal_energy = geo.InternalEnergy(e_gf);
          const double kinetic_energy = geo.KineticEnergy(v_gf);
-         if(year)
+         if(param.sim.year)
          {
             if (mpi.Root())
             {
@@ -1110,7 +1062,7 @@ int main(int argc, char *argv[])
             //   << ",\t|E| = " << std::setprecision(10) << std::scientific
             //  << kinetic_energy+internal_energy;
             cout << std::fixed;
-            if (mem_usage)
+            if (param.sim.mem_usage)
                {
                   cout << ", mem: " << mmax << "/" << msum << " MB";
                }
@@ -1136,7 +1088,7 @@ int main(int argc, char *argv[])
             //   << ",\t|E| = " << std::setprecision(10) << std::scientific
             //  << kinetic_energy+internal_energy;
             cout << std::fixed;
-            if (mem_usage)
+            if (param.sim.mem_usage)
                {
                   cout << ", mem: " << mmax << "/" << msum << " MB";
                }
@@ -1148,13 +1100,13 @@ int main(int argc, char *argv[])
          // another set of GLVis connections (one from each rank):
          MPI_Barrier(pmesh->GetComm());
 
-         if (visualization || visit || gfprint || paraview) { geo.ComputeDensity(rho_gf); }
-         if (visualization)
+         if (param.sim.visualization || param.sim.visit || param.sim.gfprint || param.sim.paraview) { geo.ComputeDensity(rho_gf); }
+         if (param.sim.visualization)
          {
             int Wx = 0, Wy = 0; // window position
             int Ww = 350, Wh = 350; // window size
             int offx = Ww+10; // window offsets
-            if (problem != 0 && problem != 4)
+            if (param.sim.problem != 0 && param.sim.problem != 4)
             {
                geodynamics::VisualizeField(vis_rho, vishost, visport, rho_gf,
                                              "Density", Wx, Wy, Ww, Wh);
@@ -1169,27 +1121,27 @@ int main(int argc, char *argv[])
             Wx += offx;
          }
 
-         if (visit)
+         if (param.sim.visit)
          {
             visit_dc.SetCycle(ti);
             visit_dc.SetTime(t);
             visit_dc.Save();
          }
 
-         if (paraview)
+         if (param.sim.paraview)
          {
             pd->SetCycle(ti);
             pd->SetTime(t);
             pd->Save();
          }
 
-         if (gfprint)
+         if (param.sim.gfprint)
          {
             std::ostringstream mesh_name, rho_name, v_name, e_name;
-            mesh_name << basename << "_" << ti << "_mesh";
-            rho_name  << basename << "_" << ti << "_rho";
-            v_name << basename << "_" << ti << "_v";
-            e_name << basename << "_" << ti << "_e";
+            mesh_name << param.sim.basename << "_" << ti << "_mesh";
+            rho_name  << param.sim.basename << "_" << ti << "_rho";
+            v_name << param.sim.basename << "_" << ti << "_v";
+            e_name << param.sim.basename << "_" << ti << "_e";
 
             std::ofstream mesh_ofs(mesh_name.str().c_str());
             mesh_ofs.precision(8);
@@ -1214,25 +1166,25 @@ int main(int argc, char *argv[])
       }
 
       // Problems checks
-      if (check)
+      if (param.sim.check)
       {
          double lnorm = e_gf * e_gf, norm;
          MPI_Allreduce(&lnorm, &norm, 1, MPI_DOUBLE, MPI_SUM, pmesh->GetComm());
          const double e_norm = sqrt(norm);
-         MFEM_VERIFY(rs_levels==0 && rp_levels==0, "check: rs, rp");
-         MFEM_VERIFY(order_v==2, "check: order_v");
-         MFEM_VERIFY(order_e==1, "check: order_e");
-         MFEM_VERIFY(ode_solver_type==4, "check: ode_solver_type");
-         MFEM_VERIFY(t_final == 0.6, "check: t_final");
-         MFEM_VERIFY(cfl==0.5, "check: cfl");
-         MFEM_VERIFY(strncmp(mesh_file, "default", 7) == 0, "check: mesh_file");
+         MFEM_VERIFY(param.mesh.rs_levels==0 && param.mesh.rp_levels==0, "check: rs, rp");
+         MFEM_VERIFY(param.mesh.order_v==2, "check: order_v");
+         MFEM_VERIFY(param.mesh.order_e==1, "check: order_e");
+         MFEM_VERIFY(param.solver.ode_solver_type==4, "check: ode_solver_type");
+         MFEM_VERIFY(param.sim.t_final == 0.6, "check: t_final");
+         MFEM_VERIFY(param.solver.cfl==0.5, "check: cfl");
+         MFEM_VERIFY(param.mesh.mesh_file.compare("default") == 0, "check: mesh_file");
          MFEM_VERIFY(dim==2 || dim==3, "check: dimension");
          Checks(ti, e_norm, checks);
       }
    }
-   MFEM_VERIFY(!check || checks == 2, "Check error!");
+   MFEM_VERIFY(!param.sim.check || checks == 2, "Check error!");
 
-   switch (ode_solver_type)
+   switch (param.solver.ode_solver_type)
    {
       case 2: steps *= 2; break;
       case 3: steps *= 3; break;
@@ -1241,9 +1193,9 @@ int main(int argc, char *argv[])
       case 7: steps *= 2;
    }
 
-   geo.PrintTimingData(mpi.Root(), steps, fom);
+   geo.PrintTimingData(mpi.Root(), steps, param.sim.fom);
 
-   if (mem_usage)
+   if (param.sim.mem_usage)
    {
       mem = GetMaxRssMB();
       MPI_Reduce(&mem, &mmax, 1, MPI_LONG, MPI_MAX, 0, pmesh->GetComm());
@@ -1257,7 +1209,7 @@ int main(int argc, char *argv[])
       cout << endl;
       cout << "Energy  diff: " << std::scientific << std::setprecision(2)
            << fabs(energy_init - energy_final) << endl;
-      if (mem_usage)
+      if (param.sim.mem_usage)
       {
          cout << "Maximum memory resident set size: "
               << mmax << "/" << msum << " MB" << endl;
@@ -1266,7 +1218,7 @@ int main(int argc, char *argv[])
 
    // Print the error.
    // For problems 0 and 4 the exact velocity is constant in time.
-   if (problem == 0 || problem == 4)
+   if (param.sim.problem == 0 || param.sim.problem == 4)
    {
       const double error_max = v_gf.ComputeMaxError(v_coeff),
                    error_l1  = v_gf.ComputeL1Error(v_coeff),
@@ -1279,7 +1231,7 @@ int main(int argc, char *argv[])
       }
    }
 
-   if (visualization)
+   if (param.sim.visualization)
    {
       vis_v.close();
       vis_e.close();
@@ -1295,12 +1247,12 @@ int main(int argc, char *argv[])
 static void display_banner(std::ostream &os)
 {
    os << endl
-      << "       __                __                 " << endl
-      << "      / /   ____  ____  / /_  ____  _____   " << endl
-      << "     / /   / __ `/ __ `/ __ \\/ __ \\/ ___/ " << endl
-      << "    / /___/ /_/ / /_/ / / / / /_/ (__  )    " << endl
-      << "   /_____/\\__,_/\\__, /_/ /_/\\____/____/  " << endl
-      << "               /____/                       " << endl << endl;
+      << "       __                __               __  " << endl
+      << "      / /   ____ _____ _/ /_  ____  _____/ /_ " << endl
+      << "     / /   / __ `/ __ `/ __ \/ __ \/ ___/ __/ " << endl
+      << "    / /___/ /_/ / /_/ / / / / /_/ (__  ) /_   " << endl
+      << "   /_____/\__,_/\__, /_/ /_/\____/____/\__/   " << endl
+      << "               /____/                         " << endl << endl;
 }
 
 static long GetMaxRssMB()

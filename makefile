@@ -93,7 +93,8 @@ EXTRA_INC_DIR = $(or $(wildcard $(MFEM_DIR)/include/mfem),$(MFEM_DIR))
 CCC = $(strip $(CXX) $(LAGHOS_FLAGS) $(if $(EXTRA_INC_DIR),-I$(EXTRA_INC_DIR)))
 
 LAGHOS_LIBS = $(MFEM_LIBS) $(MFEM_EXT_LIBS)
-LIBS = $(strip $(LAGHOS_LIBS) $(LDFLAGS))
+PROGRAMOPTIONS_LIBS = -L/usr/lib/x86_64-linux-gnu -lboost_program_options
+LIBS = $(strip $(LAGHOS_LIBS) $(LDFLAGS) $(PROGRAMOPTIONS_LIBS))
 
 SOURCE_FILES = $(sort $(wildcard *.cpp))
 HEADER_FILES = $(sort $(wildcard *.hpp))
