@@ -49,15 +49,14 @@
 // thermal state.
 //
 // -- How to run LAGHOST
-// mpirun -np 8 laghost -fa -dim 2 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh2d.mesh
-// mpirun -np 8 laghost -fa -dim 3 -rs 2 -tf 50e3 -m ../mesh_data/Qmesh3d.mesh
+// mpirun -np 8 laghost -i ./defaults.cfg
 
 #include <fstream>
 #include <sys/time.h>
 #include <sys/resource.h>
-#include "laghos_solver.hpp"
-#include "laghos_rheology.hpp"
-#include "laghos_function.hpp"
+#include "laghost_solver.hpp"
+#include "laghost_rheology.hpp"
+#include "laghost_function.hpp"
 #include <cmath>
 #include "parameters.hpp"
 #include "input.hpp"
@@ -1247,12 +1246,12 @@ int main(int argc, char *argv[])
 static void display_banner(std::ostream &os)
 {
    os << endl
-      << "       __                __               __  " << endl
-      << "      / /   ____ _____ _/ /_  ____  _____/ /_ " << endl
-      << "     / /   / __ `/ __ `/ __ \/ __ \/ ___/ __/ " << endl
-      << "    / /___/ /_/ / /_/ / / / / /_/ (__  ) /_   " << endl
-      << "   /_____/\__,_/\__, /_/ /_/\____/____/\__/   " << endl
-      << "               /____/                         " << endl << endl;
+      << "       __                __               __    " << endl
+      << "      / /   ____ _____ _/ /_  ____  _____/ /_   " << endl
+      << "     / /   / __ `/ __ `/ __ \\/ __ \\/ ___/ __/ " << endl
+      << "    / /___/ /_/ / /_/ / / / / /_/ (__  ) /_     " << endl
+      << "   /_____/\\__,_/\\__, /_/ /_/\\____/____/\\__/ " << endl
+      << "               /____/                           " << endl << endl;
 }
 
 static long GetMaxRssMB()

@@ -14,7 +14,7 @@
 // software, applications, hardware, advanced system engineering and early
 // testbed platforms, in support of the nation's exascale computing imperative.
 
-#include "laghos_assembly.hpp"
+#include "laghost_assembly.hpp"
 #include <unordered_map>
 
 namespace mfem

@@ -14,7 +14,7 @@
 # software, applications, hardware, advanced system engineering and early
 # testbed platforms, in support of the nation's exascale computing imperative.
 
-define LAGHOS_HELP_MSG
+define LAGHOST_HELP_MSG
 
 Laghos makefile targets:
 
@@ -87,14 +87,14 @@ endif
 CXX = $(MFEM_CXX)
 CPPFLAGS = $(MFEM_CPPFLAGS)
 CXXFLAGS = $(MFEM_CXXFLAGS)
-LAGHOS_FLAGS = $(CPPFLAGS) $(CXXFLAGS) $(MFEM_INCFLAGS)
+LAGHOST_FLAGS = $(CPPFLAGS) $(CXXFLAGS) $(MFEM_INCFLAGS)
 # Extra include dir, needed for now to include headers like "general/forall.hpp"
 EXTRA_INC_DIR = $(or $(wildcard $(MFEM_DIR)/include/mfem),$(MFEM_DIR))
-CCC = $(strip $(CXX) $(LAGHOS_FLAGS) $(if $(EXTRA_INC_DIR),-I$(EXTRA_INC_DIR)))
+CCC = $(strip $(CXX) $(LAGHOST_FLAGS) $(if $(EXTRA_INC_DIR),-I$(EXTRA_INC_DIR)))
 
-LAGHOS_LIBS = $(MFEM_LIBS) $(MFEM_EXT_LIBS)
+LAGHOST_LIBS = $(MFEM_LIBS) $(MFEM_EXT_LIBS)
 PROGRAMOPTIONS_LIBS = -L/usr/lib/x86_64-linux-gnu -lboost_program_options
-LIBS = $(strip $(LAGHOS_LIBS) $(LDFLAGS) $(PROGRAMOPTIONS_LIBS))
+LIBS = $(strip $(LAGHOST_LIBS) $(LDFLAGS) $(PROGRAMOPTIONS_LIBS))
 
 SOURCE_FILES = $(sort $(wildcard *.cpp))
 HEADER_FILES = $(sort $(wildcard *.hpp))
@@ -109,17 +109,17 @@ OBJECT_FILES = $(SOURCE_FILES:.cpp=.o)
 .cpp.o:
 	cd $(<D); $(CCC) -c -ggdb -O0 $(<F)
 
-laghos: $(OBJECT_FILES) $(CONFIG_MK) $(MFEM_LIB_FILE)
-	$(MFEM_CXX) $(MFEM_LINK_FLAGS) -ggdb -O0  -o laghos $(OBJECT_FILES) $(LIBS)
+laghost: $(OBJECT_FILES) $(CONFIG_MK) $(MFEM_LIB_FILE)
+	$(MFEM_CXX) $(MFEM_LINK_FLAGS) -ggdb -O0  -o laghost $(OBJECT_FILES) $(LIBS)
 
-all:;@$(MAKE) -j $(NPROC) laghos
+all:;@$(MAKE) -j $(NPROC) laghost
 
 $(OBJECT_FILES): $(HEADER_FILES) $(CONFIG_MK)
 
 # Quick test with specific execution options
-MFEM_TESTS = laghos
+MFEM_TESTS = laghost
 RUN_MPI_4 = $(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) 4
-test: laghos
+test: laghost
 	@$(call mfem-test,$<, $(RUN_MPI_4), Laghos miniapp,\
 	-p 0 -m data/square01_quad.mesh -rs 3 -tf 0.1)
 # Testing: "test" target and mfem-test* variables are defined in MFEM's
@@ -135,7 +135,7 @@ $(CONFIG_MK) $(MFEM_LIB_FILE):
 cln clean: clean-build clean-exec clean-tests
 
 clean-build:
-	rm -rf laghos *.o *~ *.dSYM
+	rm -rf laghost *.o *~ *.dSYM
 clean-exec:
 	rm -rf ./results/*
 clean-tests:
@@ -143,18 +143,18 @@ clean-tests:
 distclean: clean
 	rm -rf bin/
 
-install: laghos
+install: laghost
 	mkdir -p $(PREFIX)
-	$(INSTALL) -m 750 laghos $(PREFIX)
+	$(INSTALL) -m 750 laghost $(PREFIX)
 
 help:
-	$(info $(value LAGHOS_HELP_MSG))
+	$(info $(value LAGHOST_HELP_MSG))
 	@true
 
 status info:
 	$(info MFEM_DIR     = $(MFEM_DIR))
-	$(info LAGHOS_FLAGS = $(LAGHOS_FLAGS))
-	$(info LAGHOS_LIBS  = $(value LAGHOS_LIBS))
+	$(info LAGHOST_FLAGS = $(LAGHOST_FLAGS))
+	$(info LAGHOST_LIBS  = $(value LAGHOST_LIBS))
 	$(info PREFIX       = $(PREFIX))
 	@true
 
@@ -178,22 +178,22 @@ options=-fa -pa $(if $(USE_CUDA),-d_cuda) #-d_debug
 #optioni = $(shell for i in {1..$(words $(options))}; do echo $$i; done)
 
 # Laghos checks template - Targets
-define laghos_checks_template
-.PHONY: laghos_$(1)_$(2)_$(3)_$(4)
-laghos_$(1)_$(2)_$(3)_$(4): laghos
-	$(eval name=laghos-x$(4)-p$(1)-$(2)D$(word $(3),$(options)))
-	$(eval command=$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(4) ./laghos $(OPTS) -p $(1) -dim $(2) $(shell echo $(word $(3),$(options))|$(SED) "s/-/ -/g"|$(SED) "s/_/ /g"))
+define laghost_checks_template
+.PHONY: laghost_$(1)_$(2)_$(3)_$(4)
+laghost_$(1)_$(2)_$(3)_$(4): laghost
+	$(eval name=laghost-x$(4)-p$(1)-$(2)D$(word $(3),$(options)))
+	$(eval command=$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(4) ./laghost $(OPTS) -p $(1) -dim $(2) $(shell echo $(word $(3),$(options))|$(SED) "s/-/ -/g"|$(SED) "s/_/ /g"))
 	@$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(4) ./$$< $(OPTS) -p $(1) -dim $(2) $(shell echo $(word $(3),$(options))|$(SED) "s/-/ -/g"|$(SED) "s/_/ /g") > /dev/null 2>&1 && \
 	$(call COLOR_PRINT,'\033[0;32m',OK,': $(name)\n') || $(call COLOR_PRINT,'\033[1;31m',KO,': $(command)\n');
 endef
 # Generate all Laghos checks template targets
 $(foreach p, $(problems), $(foreach d, $(dims), $(foreach o, $(optioni), $(foreach r, $(ranks),\
-	$(eval $(call laghos_checks_template,$(p),$(d),$(o),$(r)))))))
+	$(eval $(call laghost_checks_template,$(p),$(d),$(o),$(r)))))))
 # Output info on all Laghos checks template targets
 #$(foreach p, $(problems), $(foreach d, $(dims), $(foreach o, $(optioni), $(foreach r, $(ranks),\
-#   $(info $(call laghos_checks_template,$(p),$(d),$(o),$(r)))))))
-checks: laghos
-checks: |$(foreach p,$(problems), $(foreach d,$(dims), $(foreach o,$(optioni), $(foreach r,$(ranks), laghos_$(p)_$(d)_$(o)_$(r)))))
+#   $(info $(call laghost_checks_template,$(p),$(d),$(o),$(r)))))))
+checks: laghost
+checks: |$(foreach p,$(problems), $(foreach d,$(dims), $(foreach o,$(optioni), $(foreach r,$(ranks), laghost_$(p)_$(d)_$(o)_$(r)))))
 
 1:;@$(MAKE) -j $(NPROC) checks ranks=1
 2:;@$(MAKE) -j 8 checks ranks=2
@@ -204,35 +204,35 @@ checks: |$(foreach p,$(problems), $(foreach d,$(dims), $(foreach o,$(optioni), $
 tests:
 	cat << EOF > RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 0 -dim 2 -rs 3 -tf 0.75 -pa -vs 100 | tee RUN.dat
+	./laghost -p 0 -dim 2 -rs 3 -tf 0.75 -pa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 21 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 0 -dim 3 -rs 1 -tf 0.75 -pa -vs 100 | tee RUN.dat
+	./laghost -p 0 -dim 3 -rs 1 -tf 0.75 -pa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 21 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 1 -dim 2 -rs 3 -tf 0.8 -pa -vs 100 | tee RUN.dat
+	./laghost -p 1 -dim 2 -rs 3 -tf 0.8 -pa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 18 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 1 -dim 3 -rs 2 -tf 0.6 -pa -vs 100 | tee RUN.dat
+	./laghost -p 1 -dim 3 -rs 2 -tf 0.6 -pa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 18 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 2 -dim 1 -rs 5 -tf 0.2 -fa -vs 100 | tee RUN.dat
+	./laghost -p 2 -dim 1 -rs 5 -tf 0.2 -fa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 18 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 3 -m data/rectangle01_quad.mesh -rs 2 -tf 3.0 -pa -vs 100 | tee RUN.dat
+	./laghost -p 3 -m data/rectangle01_quad.mesh -rs 2 -tf 3.0 -pa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 18 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 3 -m data/box01_hex.mesh -rs 1 -tf 5.0 -pa -vs 100 | tee RUN.dat
+	./laghost -p 3 -m data/box01_hex.mesh -rs 1 -tf 5.0 -pa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 18 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat
 	$(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP) \
-	./laghos -p 4 -m data/square_gresho.mesh -rs 3 -ok 3 \
+	./laghost -p 4 -m data/square_gresho.mesh -rs 3 -ok 3 \
 	         -ot 2 -tf 0.62831853 -s 7 -pa -vs 100 | tee RUN.dat
 	cat RUN.dat | tail -n 21 | head -n 1 | \
 	awk '{ printf("step = %04d, dt = %s |e| = %.10e\n", $$2, $$8, $$11); }' >> RESULTS.dat

@@ -2,7 +2,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <cmath>
-#include "laghos_function.hpp"
+#include "laghost_function.hpp"
 
 namespace mfem
 {

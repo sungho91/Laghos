@@ -18,7 +18,7 @@
 #define MFEM_LAGHOS_SOLVER
 
 #include "mfem.hpp"
-#include "laghos_assembly.hpp"
+#include "laghost_assembly.hpp"
 
 #ifdef MFEM_USE_MPI
 

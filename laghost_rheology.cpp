@@ -2,7 +2,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <cmath>
-#include "laghos_rheology.hpp"
+#include "laghost_rheology.hpp"
 namespace mfem
 {
    void Returnmapping (Vector &s_gf, Vector &s_old_gf, Vector &p_gf, Vector &mat_gf, int &dim, Vector &lambda, Vector &mu, Vector &tension_cutoff, Vector &cohesion0, Vector &cohesion1, Vector &pls0, Vector &pls1, Vector &friction_angle, Vector &dilation_angle, Vector &plastic_viscosity, double &dt_old) 
