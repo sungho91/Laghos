@@ -44,6 +44,7 @@ struct Solver {
 
 struct Control {
     bool   winkler_foundation;
+    bool   winkler_flat;
     bool   lithostatic;
     double init_dt;
     double mscale;
@@ -60,6 +61,7 @@ struct Mesh_param {
     int         order_v;
     int         order_e;
     int         order_q;
+    bool        local_refinement;
 };
 
 struct Mat {
@@ -82,12 +84,48 @@ struct Mat {
     double plastic_viscosity;
 };
 
+struct TMOP {
+    bool   tmop;
+    bool   amr;
+    int    remesh_steps;
+    int    mesh_poly_deg;
+    double jitter;
+    int    metric_id;
+    int    target_id;
+    double lim_const;
+    double adapt_lim_const;
+    int    quad_type;
+    int    quad_order;
+    int    solver_type;
+    int    solver_iter;
+    double solver_rtol;
+    int    solver_art_type;
+    int    lin_solver;
+    int    max_lin_iter;
+    bool   move_bnd;
+    int    combomet;
+    bool   bal_expl_combo;
+    bool   hradaptivity;
+    int    h_metric_id;
+    bool   normalization;
+    int    verbosity_level;
+    bool   fdscheme;
+    int    adapt_eval;
+    bool   exactaction;
+    int    n_hr_iter;
+    int    n_h_iter;
+    int    mesh_node_ordering;
+    int    barrier_type;
+    int    worst_case_type;
+};
+
 struct Param {
     Sim sim;
     Solver solver;
     Mesh_param mesh;
     Control control;
     Mat mat;
+    TMOP tmop;
 };
 
 #endif

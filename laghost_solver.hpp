@@ -14,8 +14,8 @@
 // software, applications, hardware, advanced system engineering and early
 // testbed platforms, in support of the nation's exascale computing imperative.
 
-#ifndef MFEM_LAGHOS_SOLVER
-#define MFEM_LAGHOS_SOLVER
+#ifndef MFEM_LAGHOST_SOLVER
+#define MFEM_LAGHOST_SOLVER
 
 #include "mfem.hpp"
 #include "laghost_assembly.hpp"
@@ -123,32 +123,49 @@ protected:
    mutable ParFiniteElementSpace H1c;
    ParMesh *pmesh;
    // FE spaces local and global sizes
-   const int H1Vsize;
-   const int H1TVSize;
-   const HYPRE_Int H1GTVSize;
-   const int L2Vsize;
-   const int L2TVSize;
-   const HYPRE_Int L2GTVSize;
-   Array<int> block_offsets;
+   // const int H1Vsize;
+   // const int H1TVSize;
+   // const HYPRE_Int H1GTVSize;
+   // const int L2Vsize;
+   // const int L2TVSize;
+   // const HYPRE_Int L2GTVSize;
+   mutable int H1Vsize;
+   mutable int H1TVSize;
+   mutable HYPRE_Int H1GTVSize;
+   mutable int L2Vsize;
+   mutable int L2TVSize;
+   mutable HYPRE_Int L2GTVSize;
+   mutable Array<int> block_offsets;
    // Reference to the current mesh configuration.
    mutable ParGridFunction x_gf;
+   // ParGridFunction x0_gf; // copy of initial mesh position
+
+   ParGridFunction &rho0_gf;
+   // ParGridFunction x0_gf; // copy of initial mesh position
+
    const Array<int> &ess_tdofs;
-   const int dim, NE, l2dofs_cnt, l2_stress_dofs_cnt, h1dofs_cnt, source_type;
+   // const int dim, NE, l2dofs_cnt, l2_stress_dofs_cnt, h1dofs_cnt, source_type;
+   const int dim, l2dofs_cnt, l2_stress_dofs_cnt, h1dofs_cnt, source_type;
+   mutable int NE;
    const double cfl;
    const bool use_viscosity, use_vorticity, p_assembly, winkler_foundation;
    const double cg_rel_tol;
-   mutable double mass_scale, grav_mag, thickness;
+   mutable double mass_scale, grav_mag, thickness, winkler_rho;
    const int cg_max_iter;
    const double ftz_tol;
-   const ParGridFunction &gamma_gf;
-   const ParGridFunction &lambda_gf;
-   const ParGridFunction &mu_gf;
+   ParGridFunction &gamma_gf;
+   ParGridFunction &lambda_gf;
+   ParGridFunction &mu_gf;
    mutable Vector tension_cutoff, cohesion, friction_angle, dilation_angle;
    // Velocity mass matrix and local inverses of the energy mass matrices. These
    // are constant in time, due to the pointwise mass conservation property.
    mutable ParBilinearForm Mv;
    SparseMatrix Mv_spmat_copy;
    DenseTensor Me, Me_inv;
+
+   // 
+   GridFunctionCoefficient rho0_coeff; // TODO: remove when Mv update improved
+   // DenseTensor Me, Me_inv;
    // Integration rule for all assemblies.
    const IntegrationRule &ir;
    // Data associated with each quadrature point in the mesh.
@@ -172,9 +189,13 @@ protected:
    OperatorJacobiSmoother *VMassPA_Jprec;
    // Linear solver for energy.
    CGSolver CG_VMass, CG_EMass;
+
+   mutable Vector zone_max_visc, zone_vgrad;
+
    mutable TimingData timer;
    mutable QUpdate *qupdate;
    mutable Vector X, B, one, rhs, e_rhs;
+   // mutable Vector e_rhs;
    mutable ParGridFunction rhs_c_gf, dvc_gf;
    mutable Array<int> c_tdofs[3];
 
@@ -213,7 +234,7 @@ public:
                            const double cgt, const int cgiter, double ftz_tol,
                            const int order_q,
                            ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity, const double _thickness,
-                           Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle, const bool winkler);
+                           Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle, const bool winkler, const double _winkler_rho);
    ~LagrangianGeoOperator();
 
 
@@ -251,7 +272,20 @@ public:
    double KineticEnergy(const ParGridFunction &v) const;
 
    int GetH1VSize() const { return H1.GetVSize(); }
-   const Array<int> &GetBlockOffsets() const { return block_offsets; }
+   const Array<int> &GetBlockOffsets() const 
+   { 
+      return block_offsets; 
+   }
+
+   // Update all internal data on mesh change.
+   void TMOPUpdate(const Vector &S, bool quick);
+   // void TMOPUpdate(const Vector &S, Coefficient &rho0_coeff, bool quick);
+
+   void SetH0(double h0) { qdata.h0 = h0; }
+   double GetH0() const { return qdata.h0; }
+
+   Vector& GetZoneMaxVisc() { return zone_max_visc; }
+   Vector& GetZoneVGrad() { return zone_vgrad; }
 
    void PrintTimingData(bool IamRoot, int steps, const bool fom) const;
 };

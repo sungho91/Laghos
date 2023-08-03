@@ -60,6 +60,7 @@
 #include <cmath>
 #include "parameters.hpp"
 #include "input.hpp"
+#include "laghost_tmop.hpp"
 
 using std::cout;
 using std::endl;
@@ -70,6 +71,24 @@ static int problem, dim;
 static long GetMaxRssMB();
 static void display_banner(std::ostream&);
 static void Checks(const int ti, const double norm, int &checks);
+
+void TMOPUpdate(BlockVector &S, BlockVector &S_old,
+               Array<int> &offset,
+               ParGridFunction &x_gf,
+               ParGridFunction &v_gf,
+               ParGridFunction &e_gf,
+               ParGridFunction &s_gf,
+               ParGridFunction &x_ini_gf,
+               ParGridFunction &p_gf,
+               ParGridFunction &n_p_gf,
+               ParGridFunction &ini_p_gf,
+               ParGridFunction &u_gf,
+               ParGridFunction &rho0_gf,
+               ParGridFunction &lambda0_gf,
+               ParGridFunction &mu0_gf,
+               ParGridFunction &mat_gf,
+               ParLinearForm &flattening,
+               int dim, bool amr);
 
 int main(int argc, char *argv[])
 {
@@ -95,6 +114,9 @@ int main(int argc, char *argv[])
    // double blast_energy2 = 0.1;
    // double blast_position2[] = {8.0, 0.5};
 
+   // Remeshing performs using the Target-Matrix Optimization Paradigm (TMOP)
+   bool mesh_changed = false;
+   
    // Let some options be overwritten by command-line options.
    args.AddOption(&param.sim.dim, "-dim", "--dimension", "Dimension of the problem.");
    args.AddOption(&param.sim.t_final, "-tf", "--t-final",
@@ -163,6 +185,150 @@ int main(int argc, char *argv[])
    args.AddOption(&param.solver.impose_visc, "-iv", "--impose-viscosity", "-niv",
                   "--no-impose-viscosity",
                   "Use active viscosity terms even for smooth problems.");
+
+   // TMOP
+   args.AddOption(&param.tmop.tmop, "-TMOP", "--enable-TMOP", "-no-TMOP", "--disable-TMOP",
+                  "Target Mesh Optimization Paradigm.");
+   args.AddOption(&param.tmop.amr, "-amr", "--enable-amr", "-no-amr", "--disable-amr",
+                  "Adaptive mesh refinement.");
+   args.AddOption(&param.tmop.remesh_steps, "-rstep", "--remesh_steps",
+                  "remeshing frequency.");
+   args.AddOption(&param.tmop.jitter, "-ji", "--jitter",
+                  "Random perturbation scaling factor.");
+   args.AddOption(&param.tmop.metric_id, "-mid", "--metric-id",
+                  "Mesh optimization metric:\n\t"
+                  "T-metrics\n\t"
+                  "1  : |T|^2                          -- 2D no type\n\t"
+                  "2  : 0.5|T|^2/tau-1                 -- 2D shape (condition number)\n\t"
+                  "7  : |T-T^-t|^2                     -- 2D shape+size\n\t"
+                  "9  : tau*|T-T^-t|^2                 -- 2D shape+size\n\t"
+                  "14 : |T-I|^2                        -- 2D shape+size+orientation\n\t"
+                  "22 : 0.5(|T|^2-2*tau)/(tau-tau_0)   -- 2D untangling\n\t"
+                  "50 : 0.5|T^tT|^2/tau^2-1            -- 2D shape\n\t"
+                  "55 : (tau-1)^2                      -- 2D size\n\t"
+                  "56 : 0.5(sqrt(tau)-1/sqrt(tau))^2   -- 2D size\n\t"
+                  "58 : |T^tT|^2/(tau^2)-2*|T|^2/tau+2 -- 2D shape\n\t"
+                  "77 : 0.5(tau-1/tau)^2               -- 2D size\n\t"
+                  "80 : (1-gamma)mu_2 + gamma mu_77    -- 2D shape+size\n\t"
+                  "85 : |T-|T|/sqrt(2)I|^2             -- 2D shape+orientation\n\t"
+                  "90 : balanced combo mu_50 & mu_77   -- 2D shape+size\n\t"
+                  "94 : balanced combo mu_2 & mu_56    -- 2D shape+size\n\t"
+                  "98 : (1/tau)|T-I|^2                 -- 2D shape+size+orientation\n\t"
+                  // "211: (tau-1)^2-tau+sqrt(tau^2+eps)  -- 2D untangling\n\t"
+                  // "252: 0.5(tau-1)^2/(tau-tau_0)       -- 2D untangling\n\t"
+                  "301: (|T||T^-1|)/3-1              -- 3D shape\n\t"
+                  "302: (|T|^2|T^-1|^2)/9-1          -- 3D shape\n\t"
+                  "303: (|T|^2)/3/tau^(2/3)-1        -- 3D shape\n\t"
+                  "304: (|T|^3)/3^{3/2}/tau-1        -- 3D shape\n\t"
+                  // "311: (tau-1)^2-tau+sqrt(tau^2+eps)-- 3D untangling\n\t"
+                  "313: (|T|^2)(tau-tau0)^(-2/3)/3   -- 3D untangling\n\t"
+                  "315: (tau-1)^2                    -- 3D no type\n\t"
+                  "316: 0.5(sqrt(tau)-1/sqrt(tau))^2 -- 3D no type\n\t"
+                  "321: |T-T^-t|^2                   -- 3D shape+size\n\t"
+                  "322: |T-adjT^-t|^2                -- 3D shape+size\n\t"
+                  "323: |J|^3-3sqrt(3)ln(det(J))-3sqrt(3)  -- 3D shape+size\n\t"
+                  "328: balanced combo mu_301 & mu_316   -- 3D shape+size\n\t"
+                  "332: (1-gamma) mu_302 + gamma mu_315  -- 3D shape+size\n\t"
+                  "333: (1-gamma) mu_302 + gamma mu_316  -- 3D shape+size\n\t"
+                  "334: (1-gamma) mu_303 + gamma mu_316  -- 3D shape+size\n\t"
+                  "328: balanced combo mu_302 & mu_318   -- 3D shape+size\n\t"
+                  "347: (1-gamma) mu_304 + gamma mu_316  -- 3D shape+size\n\t"
+                  // "352: 0.5(tau-1)^2/(tau-tau_0)     -- 3D untangling\n\t"
+                  "360: (|T|^3)/3^{3/2}-tau              -- 3D shape\n\t"
+                  "A-metrics\n\t"
+                  "11 : (1/4*alpha)|A-(adjA)^T(W^TW)/omega|^2 -- 2D shape\n\t"
+                  "36 : (1/alpha)|A-W|^2                      -- 2D shape+size+orientation\n\t"
+                  "107: (1/2*alpha)|A-|A|/|W|W|^2             -- 2D shape+orientation\n\t"
+                  "126: (1-gamma)nu_11 + gamma*nu_14a         -- 2D shape+size\n\t"
+                 );
+   args.AddOption(&param.tmop.target_id, "-tid", "--target-id",
+                  "Target (ideal element) type:\n\t"
+                  "1: Ideal shape, unit size\n\t"
+                  "2: Ideal shape, equal size\n\t"
+                  "3: Ideal shape, initial size\n\t"
+                  "4: Given full analytic Jacobian (in physical space)\n\t"
+                  "5: Ideal shape, given size (in physical space)");
+   args.AddOption(&param.tmop.lim_const, "-lc", "--limit-const", "Limiting constant.");
+   args.AddOption(&param.tmop.adapt_lim_const, "-alc", "--adapt-limit-const",
+                  "Adaptive limiting coefficient constant.");
+   args.AddOption(&param.tmop.quad_type, "-qt", "--quad-type",
+                  "Quadrature rule type:\n\t"
+                  "1: Gauss-Lobatto\n\t"
+                  "2: Gauss-Legendre\n\t"
+                  "3: Closed uniform points");
+   args.AddOption(&param.tmop.quad_order, "-qo", "--quad_order",
+                  "Order of the quadrature rule.");
+   args.AddOption(&param.tmop.solver_type, "-st", "--solver-type",
+                  " Type of solver: (default) 0: Newton, 1: LBFGS");
+   args.AddOption(&param.tmop.solver_iter, "-ni", "--newton-iters",
+                  "Maximum number of Newton iterations.");
+   args.AddOption(&param.tmop.solver_rtol, "-rtol", "--newton-rel-tolerance",
+                  "Relative tolerance for the Newton solver.");
+   args.AddOption(&param.tmop.solver_art_type, "-art", "--adaptive-rel-tol",
+                  "Type of adaptive relative linear solver tolerance:\n\t"
+                  "0: None (default)\n\t"
+                  "1: Eisenstat-Walker type 1\n\t"
+                  "2: Eisenstat-Walker type 2");
+   args.AddOption(&param.tmop.lin_solver, "-ls", "--lin-solver",
+                  "Linear solver:\n\t"
+                  "0: l1-Jacobi\n\t"
+                  "1: CG\n\t"
+                  "2: MINRES\n\t"
+                  "3: MINRES + Jacobi preconditioner\n\t"
+                  "4: MINRES + l1-Jacobi preconditioner");
+   args.AddOption(&param.tmop.max_lin_iter, "-li", "--lin-iter",
+                  "Maximum number of iterations in the linear solve.");
+   args.AddOption(&param.tmop.move_bnd, "-bnd", "--move-boundary", "-fix-bnd",
+                  "--fix-boundary",
+                  "Enable motion along horizontal and vertical boundaries.");
+   args.AddOption(&param.tmop.combomet, "-cmb", "--combo-type",
+                  "Combination of metrics options:\n\t"
+                  "0: Use single metric\n\t"
+                  "1: Shape + space-dependent size given analytically\n\t"
+                  "2: Shape + adapted size given discretely; shared target");
+   args.AddOption(&param.tmop.bal_expl_combo, "-bec", "--balance-explicit-combo",
+                  "-no-bec", "--balance-explicit-combo",
+                  "Automatic balancing of explicit combo metrics.");
+   args.AddOption(&param.tmop.hradaptivity, "-hr", "--hr-adaptivity", "-no-hr",
+                  "--no-hr-adaptivity",
+                  "Enable hr-adaptivity.");
+   args.AddOption(&param.tmop.h_metric_id, "-hmid", "--h-metric",
+                  "Same options as metric_id. Used to determine refinement"
+                  " type for each element if h-adaptivity is enabled.");
+   args.AddOption(&param.tmop.normalization, "-nor", "--normalization", "-no-nor",
+                  "--no-normalization",
+                  "Make all terms in the optimization functional unitless.");
+   args.AddOption(&param.tmop.fdscheme, "-fd", "--fd_approximation",
+                  "-no-fd", "--no-fd-approx",
+                  "Enable finite difference based derivative computations.");
+   args.AddOption(&param.tmop.exactaction, "-ex", "--exact_action",
+                  "-no-ex", "--no-exact-action",
+                  "Enable exact action of TMOP_Integrator.");
+   args.AddOption(&param.tmop.verbosity_level, "-vl", "--verbosity-level",
+                  "Verbosity level for the involved iterative solvers:\n\t"
+                  "0: no output\n\t"
+                  "1: Newton iterations\n\t"
+                  "2: Newton iterations + linear solver summaries\n\t"
+                  "3: newton iterations + linear solver iterations");
+   args.AddOption(&param.tmop.adapt_eval, "-ae", "--adaptivity-evaluator",
+                  "0 - Advection based (DEFAULT), 1 - GSLIB.");
+   args.AddOption(&param.tmop.n_hr_iter, "-nhr", "--n_hr_iter",
+                  "Number of hr-adaptivity iterations.");
+   args.AddOption(&param.tmop.n_h_iter, "-nh", "--n_h_iter",
+                  "Number of h-adaptivity iterations per r-adaptivity"
+                  "iteration.");
+   args.AddOption(&param.tmop.mesh_node_ordering, "-mno", "--mesh_node_ordering",
+                  "Ordering of mesh nodes."
+                  "0 (default): byNodes, 1: byVDIM");
+   args.AddOption(&param.tmop.barrier_type, "-btype", "--barrier-type",
+                  "0 - None,"
+                  "1 - Shifted Barrier,"
+                  "2 - Pseudo Barrier.");
+   args.AddOption(&param.tmop.worst_case_type, "-wctype", "--worst-case-type",
+                  "0 - None,"
+                  "1 - Beta,"
+                  "2 - PMean.");
+
    args.Parse();
 
    if (!args.Good())
@@ -258,40 +424,47 @@ int main(int argc, char *argv[])
    // Refine the mesh in serial to increase the resolution.
    for (int lev = 0; lev < param.mesh.rs_levels; lev++) { mesh->UniformRefinement(); }
 
-   // Local refiement
-   Array<int> refs;
-   for (int i = 0; i < mesh->GetNE(); i++)
+   if(param.mesh.local_refinement)
    {
-      if(mesh->GetAttribute(i) >= 2)
+      // Local refiement
+      mesh->EnsureNCMesh(true);
+
+      Array<int> refs;
+      for (int i = 0; i < mesh->GetNE(); i++)
       {
-         refs.Append(i);
+         if(mesh->GetAttribute(i) >= 2)
+         {
+            refs.Append(i);
+         }
       }
-   }
 
-   mesh->GeneralRefinement(refs, 1);
-   refs.DeleteAll();
+      mesh->GeneralRefinement(refs, 1);
+      refs.DeleteAll();
 
-   for (int i = 0; i < mesh->GetNE(); i++)
-   {
-      if(mesh->GetAttribute(i) == 3)
+      for (int i = 0; i < mesh->GetNE(); i++)
       {
-         refs.Append(i);
+         if(mesh->GetAttribute(i) == 3)
+         {
+            refs.Append(i);
+         }
       }
-   }
 
-   mesh->GeneralRefinement(refs, 1);
-   refs.DeleteAll();
+      mesh->GeneralRefinement(refs, 1);
+      refs.DeleteAll();
 
-   for (int i = 0; i < mesh->GetNE(); i++)
-   {
-      if(mesh->GetAttribute(i) == 3)
+      for (int i = 0; i < mesh->GetNE(); i++)
       {
-         refs.Append(i);
+         if(mesh->GetAttribute(i) == 3)
+         {
+            refs.Append(i);
+         }
       }
-   }
 
-   mesh->GeneralRefinement(refs, 1);
-   refs.DeleteAll();
+      mesh->GeneralRefinement(refs, 1);
+      refs.DeleteAll();
+      
+      mesh->Finalize(true);
+   }
 
    const int mesh_NE = mesh->GetNE();
    if (mpi.Root())
@@ -819,7 +992,24 @@ int main(int argc, char *argv[])
    ini_p_gf=p_gf; n_p_gf=0.0;
 
    ParGridFunction u_gf(&H1FESpace);  // Displacment
-   u_gf = 0.0; 
+   u_gf = 0.0;
+
+   // Flattening node
+   ParLinearForm flattening(&H1FESpace); 
+   Array<int> nbc_bdr(pmesh->bdr_attributes.Max());   
+   nbc_bdr = 0; nbc_bdr[2] = 1; // bottome boundary
+   VectorArrayCoefficient bottom_node(dim);
+   for (int i = 0; i < dim-1; i++)
+   {
+     bottom_node.Set(i, new ConstantCoefficient(0.0));
+   }
+
+   Vector bottom_node_id(pmesh->bdr_attributes.Max());
+   bottom_node_id = 0.0;
+   bottom_node_id(2) = 1.0;
+   bottom_node.Set(dim-1, new PWConstCoefficient(bottom_node_id));
+   flattening.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(bottom_node), nbc_bdr);
+   flattening.Assemble();
 
    // L2_FECollection mat_fec(0, pmesh->Dimension());
    // ParFiniteElementSpace mat_fes(pmesh, &mat_fec);
@@ -850,7 +1040,7 @@ int main(int argc, char *argv[])
                                           param.solver.cg_tol, param.solver.cg_max_iter, 
                                           param.solver.ftz_tol,
                                           param.mesh.order_q, lambda0_gf, mu0_gf, param.control.mscale, param.control.gravity, param.control.thickness,
-                                          lambda, mu, tension_cutoff, cohesion0, friction_angle, dilation_angle, param.control.winkler_foundation);
+                                          lambda, mu, tension_cutoff, cohesion0, friction_angle, dilation_angle, param.control.winkler_foundation, param.control.winkler_rho);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
@@ -913,9 +1103,9 @@ int main(int argc, char *argv[])
       pd->RegisterField("Stress", &s_gf);
       pd->RegisterField("Plastic Strain", &p_gf);
       pd->RegisterField("Non-inital Plastic Strain", &n_p_gf);
-      // pd->SetLevelsOfDetail(order);
-      // pd->SetDataFormat(VTKFormat::BINARY);
-      pd->SetDataFormat(VTKFormat::ASCII);
+      pd->SetLevelsOfDetail(param.mesh.order_v);
+      pd->SetDataFormat(VTKFormat::BINARY);
+      // pd->SetDataFormat(VTKFormat::ASCII);
       pd->SetHighOrderOutput(true);
       pd->SetCycle(0);
       pd->SetTime(0.0);
@@ -1028,7 +1218,180 @@ int main(int argc, char *argv[])
       pmesh->NewNodes(x_gf, false);
       u_gf.Add(dt, v_gf);
 
-      // geo.ComputeDensity(rho_gf);
+      if (param.tmop.tmop)
+      {
+         mesh_changed = false;
+         if(last_step || (ti % param.tmop.remesh_steps) == 0)
+         {
+            if(param.control.winkler_foundation & param.control.winkler_flat)
+            {
+               for( int i = 0; i < x_gf.Size(); i++ )
+               {
+                  if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}
+               }
+            }
+
+            // Store source mesh positions.
+            ParMesh *pmesh_old =  new ParMesh(*pmesh);
+ 
+            HR_adaptivity(pmesh, x_gf, ess_tdofs, myid, param.tmop.mesh_poly_deg, param.mesh.rs_levels, param.mesh.rp_levels, param.tmop.jitter, param.tmop.metric_id, param.tmop.target_id,\
+                           param.tmop.lim_const, param.tmop.adapt_lim_const, param.tmop.quad_type, param.tmop.quad_order, param.tmop.solver_type, param.tmop.solver_iter, param.tmop.solver_rtol, \
+                           param.tmop.solver_art_type, param.tmop.lin_solver, param.tmop.max_lin_iter, param.tmop.move_bnd, param.tmop.combomet, param.tmop.bal_expl_combo, param.tmop.hradaptivity, \
+                           param.tmop.h_metric_id, param.tmop.normalization, param.tmop.verbosity_level, param.tmop.fdscheme, param.tmop.adapt_eval, param.tmop.exactaction, param.solver.p_assembly, \
+                           param.tmop.n_hr_iter, param.tmop.n_h_iter, param.tmop.mesh_node_ordering, param.tmop.barrier_type, param.tmop.worst_case_type);
+
+            mesh_changed = true;
+
+            // Optimized mesh
+            pmesh->NewNodes(x_gf, false);
+
+            {
+               int NE_opt = pmesh->GetNE(), 
+                   nsp1 = L2FESpace.GetFE(0)->GetNodes().GetNPoints(), 
+                   nsp2 = L2FESpace_stress.GetFE(0)->GetNodes().GetNPoints(), 
+                   tar_ncomp = v_gf.VectorDim();
+               // H1 space
+               // Generate list of points where the grid function will be evaluated.
+               Vector vxyz;
+               int point_ordering;
+               vxyz = *pmesh->GetNodes(); // from target mesh
+               point_ordering = pmesh->GetNodes()->FESpace()->GetOrdering();
+               int nodes_cnt = vxyz.Size() / dim;
+
+               // Find and Interpolate FE function values on the desired points.
+               Vector interp_vals(nodes_cnt*tar_ncomp);
+               FindPointsGSLIB finder;
+               // FindPointsGSLIB finder(MPI_COMM_WORLD);
+               finder.Setup(*pmesh_old);
+               // finder.Setup(*pmesh); // setup using source mesh
+               finder.Interpolate(vxyz, v_gf, interp_vals, point_ordering);
+               v_gf = interp_vals;
+
+               finder.Interpolate(vxyz, u_gf, interp_vals, point_ordering);
+               u_gf = interp_vals;
+
+               // L2 space
+               vxyz.SetSize(nsp1*NE*dim);
+               vxyz =0.0;
+               for (int i = 0; i < NE; i++)
+               {
+                  const FiniteElement *fe = L2FESpace.GetFE(i);
+                  const IntegrationRule ir = fe->GetNodes();
+                  ElementTransformation *et = L2FESpace.GetElementTransformation(i);
+
+                  DenseMatrix pos;
+                  et->Transform(ir, pos);
+                  Vector rowx(vxyz.GetData() + i*nsp1, nsp1),
+                        rowy(vxyz.GetData() + i*nsp1 + NE*nsp1, nsp1),
+                        rowz;
+                  if (dim == 3)
+                  {
+                     rowz.SetDataAndSize(vxyz.GetData() + i*nsp1 + 2*NE*nsp1, nsp1);
+                  }
+                  pos.GetRow(0, rowx);
+                  pos.GetRow(1, rowy);
+                  if (dim == 3) { pos.GetRow(2, rowz); }
+               }
+               point_ordering = Ordering::byNODES;
+               nodes_cnt = vxyz.Size() / dim;
+               tar_ncomp = e_gf.VectorDim();
+
+               // Find and Interpolate FE function values on the desired points.
+               interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;
+               // FindPointsGSLIB finder;
+               // FindPointsGSLIB finder(MPI_COMM_WORLD);
+               // finder.Setup(*pmesh_old);
+
+               // 
+               finder.Interpolate(vxyz, e_gf, interp_vals, point_ordering);
+               e_gf = interp_vals;
+
+               finder.Interpolate(vxyz, p_gf, interp_vals, point_ordering);
+               p_gf = interp_vals;
+
+               finder.Interpolate(vxyz, n_p_gf, interp_vals, point_ordering);
+               n_p_gf = interp_vals;
+
+               finder.Interpolate(vxyz, ini_p_gf, interp_vals, point_ordering);
+               ini_p_gf = interp_vals;
+
+               finder.Interpolate(vxyz, rho0_gf, interp_vals, point_ordering);
+               rho0_gf = interp_vals;
+
+               finder.Interpolate(vxyz, lambda0_gf, interp_vals, point_ordering);
+               lambda0_gf = interp_vals;
+
+               finder.Interpolate(vxyz, mu0_gf, interp_vals, point_ordering);
+               mu0_gf = interp_vals;
+
+               finder.Interpolate(vxyz, mat_gf, interp_vals, point_ordering);
+               mat_gf = interp_vals;
+
+               // L2 space of stress
+               vxyz.SetSize(nsp2*NE*dim);
+               vxyz =0.0;
+               for (int i = 0; i < NE; i++)
+               {
+                  const FiniteElement *fe = L2FESpace.GetFE(i);
+                  const IntegrationRule ir = fe->GetNodes();
+                  ElementTransformation *et = L2FESpace.GetElementTransformation(i);
+
+                  DenseMatrix pos;
+                  et->Transform(ir, pos);
+                  Vector rowx(vxyz.GetData() + i*nsp2, nsp2),
+                        rowy(vxyz.GetData() + i*nsp2 + NE*nsp2, nsp2),
+                        rowz;
+                  if (dim == 3)
+                  {
+                     rowz.SetDataAndSize(vxyz.GetData() + i*nsp2 + 2*NE*nsp2, nsp2);
+                  }
+                  pos.GetRow(0, rowx);
+                  pos.GetRow(1, rowy);
+                  if (dim == 3) { pos.GetRow(2, rowz); }
+               }
+               point_ordering = Ordering::byNODES;
+               nodes_cnt = vxyz.Size() / dim;
+               tar_ncomp = s_gf.VectorDim();
+
+               // Find and Interpolate FE function values on the desired points.
+               interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;
+               // FindPointsGSLIB finder;
+               // FindPointsGSLIB finder(MPI_COMM_WORLD);
+               // finder.Setup(*pmesh_old);
+
+               // 
+               finder.Interpolate(vxyz, s_gf, interp_vals, point_ordering);
+               s_gf = interp_vals;
+
+            }
+
+            delete pmesh_old;
+
+          x_gf.SyncAliasMemory(S);
+          v_gf.SyncAliasMemory(S);
+          e_gf.SyncAliasMemory(S);
+          s_gf.SyncAliasMemory(S);
+          x_ini_gf.SyncAliasMemory(S);
+         }
+
+
+         if (mesh_changed & param.tmop.amr)
+         {
+            // update state and operator
+            TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+            geo.TMOPUpdate(S, true);
+            pmesh->Rebalance();
+            TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+            geo.TMOPUpdate(S, false);
+            // // Ensure the sub-vectors x_gf, v_gf, and e_gf know the location of the
+            x_gf.SyncAliasMemory(S);
+            v_gf.SyncAliasMemory(S);
+            e_gf.SyncAliasMemory(S);
+            s_gf.SyncAliasMemory(S);
+            x_ini_gf.SyncAliasMemory(S);
+            ode_solver->Init(geo);
+         }
+      }
       
       if (last_step || (ti % param.sim.vis_steps) == 0)
       {
@@ -1241,6 +1604,90 @@ int main(int argc, char *argv[])
    delete pmesh;
 
    return 0;
+}
+
+void TMOPUpdate(BlockVector &S, BlockVector &S_old,
+               Array<int> &offset,
+               ParGridFunction &x_gf,
+               ParGridFunction &v_gf,
+               ParGridFunction &e_gf,
+               ParGridFunction &s_gf,
+               ParGridFunction &x_ini_gf,
+               ParGridFunction &p_gf,
+               ParGridFunction &n_p_gf,
+               ParGridFunction &ini_p_gf,
+               ParGridFunction &u_gf,
+               ParGridFunction &rho0_gf,
+               ParGridFunction &lambda0_gf,
+               ParGridFunction &mu0_gf,
+               ParGridFunction &mat_gf,
+               ParLinearForm &flattening,
+               int dim, bool amr)
+{
+   ParFiniteElementSpace* H1FESpace = x_gf.ParFESpace();
+   ParFiniteElementSpace* L2FESpace = e_gf.ParFESpace();
+   ParFiniteElementSpace* L2FESpace_stress = s_gf.ParFESpace();
+
+   H1FESpace->Update();
+   L2FESpace->Update();
+   L2FESpace_stress->Update();
+
+   int Vsize_h1 = H1FESpace->GetVSize();
+   int Vsize_l2 = L2FESpace->GetVSize();
+
+   offset[0] = 0;
+   offset[1] = offset[0] + Vsize_h1;
+   offset[2] = offset[1] + Vsize_h1;
+   offset[3] = offset[2] + Vsize_l2;
+   offset[4] = offset[3] + Vsize_l2*3*(dim-1);
+   offset[5] = offset[4] + Vsize_h1;
+
+   S_old = S;
+   S.Update(offset);
+
+   x_gf.Update();
+   v_gf.Update();
+   e_gf.Update(); 
+   s_gf.Update(); 
+   x_ini_gf.Update(); 
+
+   if(amr)
+   {
+      const Operator* H1Update = H1FESpace->GetUpdateOperator();
+      const Operator* L2Update = L2FESpace->GetUpdateOperator();
+      const Operator* L2Update_stress = L2FESpace_stress->GetUpdateOperator();
+
+      H1Update->Mult(S_old.GetBlock(0), S.GetBlock(0));
+      H1Update->Mult(S_old.GetBlock(1), S.GetBlock(1));
+      L2Update->Mult(S_old.GetBlock(2), S.GetBlock(2));
+      L2Update_stress->Mult(S_old.GetBlock(3), S.GetBlock(3));
+      H1Update->Mult(S_old.GetBlock(4), S.GetBlock(4));
+   }
+   
+   x_gf.MakeRef(H1FESpace, S, offset[0]);
+   v_gf.MakeRef(H1FESpace, S, offset[1]);
+   e_gf.MakeRef(L2FESpace, S, offset[2]);
+   s_gf.MakeRef(L2FESpace_stress, S, offset[3]);
+   x_ini_gf.MakeRef(H1FESpace, S, offset[4]);
+   S_old.Update(offset);
+
+   // Gridfunction update (Non-blcok vector )
+   p_gf.Update();
+   n_p_gf.Update();
+   ini_p_gf.Update(); 
+   u_gf.Update();
+   rho0_gf.Update();
+   lambda0_gf.Update();
+   mu0_gf.Update();
+   mat_gf.Update();
+   
+   //
+   flattening.Update();
+   flattening.Assemble();
+   
+   H1FESpace->UpdatesFinished();
+   L2FESpace->UpdatesFinished();
+   L2FESpace_stress->UpdatesFinished();
 }
 
 static void display_banner(std::ostream &os)

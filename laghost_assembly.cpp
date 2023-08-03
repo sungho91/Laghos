@@ -213,6 +213,7 @@ void ForceIntegrator::AssembleElementMatrix2(const FiniteElement &trial_fe,
                const double stressJinvT = qdata.stressJinvT(vd)(eq, gd);
                loc_force(i, vd) +=  stressJinvT * vshape(i,gd);
             }
+            // std::cout << loc_force(i, vd) << std::endl;
          }
       }
       trial_fe.CalcShape(ip, shape);

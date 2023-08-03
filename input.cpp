@@ -50,7 +50,7 @@ static void declare_parameters(po::options_description &cfg,
          "Visualization outputs for ParaView? true or false")
         ("sim.gfprint", po::value<bool>(&p.sim.gfprint)->default_value(false),
          "Enable or disable result output (files in mfem format)") 
-        ("sim.basename", po::value<std::string>(&p.sim.basename)->default_value("results/Laghos"),
+        ("sim.basename", po::value<std::string>(&p.sim.basename)->default_value("results/Laghost"),
          "Prefix for the output files")
         ("sim.device", po::value<std::string>(&p.sim.device)->default_value("cpu"),
          "Choose device, cpu or gpu")
@@ -78,6 +78,7 @@ static void declare_parameters(po::options_description &cfg,
 
     cfg.add_options()
         ("control.winkler_foundation", po::value<bool>(&p.control.winkler_foundation)->default_value(false)," ")
+        ("control.winkler_flat", po::value<bool>(&p.control.winkler_flat)->default_value(false)," ")
         ("control.lithostatic", po::value<bool>(&p.control.lithostatic)->default_value(true)," ")
         ("control.init_dt", po::value<double>(&p.control.init_dt)->default_value(1.0), " ")
         ("control.mscale", po::value<double>(&p.control.mscale)->default_value(1.0e16), " ")
@@ -95,6 +96,7 @@ static void declare_parameters(po::options_description &cfg,
         ("mesh.order_v", po::value<int>(&p.mesh.order_v)->default_value(2),"Order (degree) of the kinematic finite element space.")
         ("mesh.order_e", po::value<int>(&p.mesh.order_e)->default_value(1),"Order (degree) of the thermodynamic finite element space.")
         ("mesh.order_q", po::value<int>(&p.mesh.order_q)->default_value(-1),"Order  of the integration rule.")
+        ("mesh.local_refinement", po::value<bool>(&p.mesh.local_refinement)->default_value(false), " ")
         ;
 
     cfg.add_options()
@@ -115,6 +117,41 @@ static void declare_parameters(po::options_description &cfg,
         ("mat.pls0", po::value<double>(&p.mat.pls0)->default_value(0.0), " ")
         ("mat.pls1", po::value<double>(&p.mat.pls1)->default_value(0.5), " ")
         ("mat.plastic_viscosity", po::value<double>(&p.mat.plastic_viscosity)->default_value(1.0), " ")
+        ;
+    cfg.add_options()
+        ("tmop.tmop", po::value<bool>(&p.tmop.tmop)->default_value(false), " ")
+        ("tmop.amr", po::value<bool>(&p.tmop.amr)->default_value(false), " ")
+        ("tmop.remesh_steps", po::value<int>(&p.tmop.remesh_steps)->default_value(50000), " ")
+        ("tmop.mesh_poly_deg", po::value<int>(&p.tmop.mesh_poly_deg)->default_value(2), " ")
+        ("tmop.jitter", po::value<double>(&p.tmop.jitter)->default_value(0.0), " ")
+        ("tmop.metric_id", po::value<int>(&p.tmop.metric_id)->default_value(2), " ")
+        ("tmop.target_id", po::value<int>(&p.tmop.target_id)->default_value(1), " ")
+        ("tmop.lim_const", po::value<double>(&p.tmop.lim_const)->default_value(0.0), " ")
+        ("tmop.adapt_lim_const", po::value<double>(&p.tmop.adapt_lim_const)->default_value(0.0), " ")
+        ("tmop.quad_type", po::value<int>(&p.tmop.quad_type)->default_value(1), " ")
+        ("tmop.quad_order", po::value<int>(&p.tmop.quad_order)->default_value(8), " ")
+        ("tmop.solver_type", po::value<int>(&p.tmop.solver_type)->default_value(0), " ")
+        ("tmop.solver_iter", po::value<int>(&p.tmop.solver_iter)->default_value(20), " ")
+        ("tmop.solver_rtol", po::value<double>(&p.tmop.solver_rtol)->default_value(1e-10), " ")
+        ("tmop.solver_art_type", po::value<int>(&p.tmop.solver_art_type)->default_value(0), " ")
+        ("tmop.lin_solver", po::value<int>(&p.tmop.lin_solver)->default_value(2), " ")
+        ("tmop.max_lin_iter", po::value<int>(&p.tmop.max_lin_iter)->default_value(100), " ")
+        ("tmop.move_bnd", po::value<bool>(&p.tmop.move_bnd)->default_value(false), " ")
+        ("tmop.combomet", po::value<int>(&p.tmop.combomet)->default_value(0), " ")
+        ("tmop.bal_expl_combo", po::value<bool>(&p.tmop.bal_expl_combo)->default_value(false), " ")
+        ("tmop.hradaptivity", po::value<bool>(&p.tmop.hradaptivity)->default_value(false), " ")
+        ("tmop.h_metric_id", po::value<int>(&p.tmop.h_metric_id)->default_value(-1), " ")
+        ("tmop.normalization", po::value<bool>(&p.tmop.normalization)->default_value(false), " ")
+        ("tmop.verbosity_level", po::value<int>(&p.tmop.verbosity_level)->default_value(0), " ")
+        ("tmop.fdscheme", po::value<bool>(&p.tmop.fdscheme)->default_value(false), " ")
+        ("tmop.adapt_eval", po::value<int>(&p.tmop.adapt_eval)->default_value(0), " ")
+        ("tmop.exactaction", po::value<bool>(&p.tmop.exactaction)->default_value(false), " ")
+
+        ("tmop.n_hr_iter", po::value<int>(&p.tmop.n_hr_iter)->default_value(5), " ")
+        ("tmop.n_h_iter", po::value<int>(&p.tmop.n_h_iter)->default_value(1), " ")
+        ("tmop.mesh_node_ordering", po::value<int>(&p.tmop.mesh_node_ordering)->default_value(0), " ")
+        ("tmop.barrier_type", po::value<int>(&p.tmop. barrier_type)->default_value(0), " ")
+        ("tmop.worst_case_type", po::value<int>(&p.tmop.worst_case_type)->default_value(0), " ")
         ;
 }
 

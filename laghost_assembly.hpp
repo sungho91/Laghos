@@ -14,8 +14,8 @@
 // software, applications, hardware, advanced system engineering and early
 // testbed platforms, in support of the nation's exascale computing imperative.
 
-#ifndef MFEM_LAGHOS_ASSEMBLY
-#define MFEM_LAGHOS_ASSEMBLY
+#ifndef MFEM_LAGHOST_ASSEMBLY
+#define MFEM_LAGHOST_ASSEMBLY
 
 #include "mfem.hpp"
 #include "general/forall.hpp"
@@ -81,6 +81,14 @@ struct QuadratureData
       //   epsJinvT(NE * quads_per_el, dim, dim),
       //   plsJinvT(NE * quads_per_el, dim, dim),
         rho0DetJ0w(NE * quads_per_el) { }
+   void Resize(int dim, int NE, int quads_per_el)
+   {
+      Jac0inv.SetSize(dim, dim, NE * quads_per_el);
+      stressJinvT.SetSize(NE * quads_per_el, dim, dim);
+      tauJinvT.SetSize(NE * quads_per_el, dim, dim);
+      buoyJinvT.SetSize(NE * quads_per_el, dim, dim);
+      rho0DetJ0w.SetSize(NE * quads_per_el);
+   }
 };
 
 // This class is used only for visualization. It assembles (rho, phi) in each
@@ -212,4 +220,4 @@ public:
 
 } // namespace mfem
 
-#endif // MFEM_LAGHOS_ASSEMBLY
+#endif // MFEM_LAGHOST_ASSEMBLY
