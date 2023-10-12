@@ -74,17 +74,28 @@ static void declare_parameters(po::options_description &cfg,
         ("solver.cg_max_iter", po::value<int>(&p.solver.cg_max_iter)->default_value(300)," ")
         ("solver.p_assembly", po::value<bool>(&p.solver.p_assembly)->default_value(false)," ")
         ("solver.impose_visc", po::value<bool>(&p.solver.impose_visc)->default_value(true)," ")
-    ;
+        ;
+
+    cfg.add_options()
+        ("bc.bc_unit", po::value<std::string>(&p.bc.bc_unit)->default_value("cm/yr"),"Unit of Velocity")
+        ("bc.bc_ids", po::value<std::string>(&p.bc.bc_ids)->default_value("[0]"),"Boundary indicators '[d0, d1, d2, ...]")
+        ("bc.bc_vxs", po::value<std::string>(&p.bc.bc_vxs)->default_value("[0]"), "Boundary veloicty x '[d0, d1, d2, ...]")
+        ("bc.bc_vys", po::value<std::string>(&p.bc.bc_vys)->default_value("[0]"), "Boundary velocity y '[d0, d1, d2, ...]")
+        ("bc.bc_vzs", po::value<std::string>(&p.bc.bc_vzs)->default_value("[0]"), "Boundary velocity z '[d0, d1, d2, ...]")
+        ;
 
     cfg.add_options()
         ("control.winkler_foundation", po::value<bool>(&p.control.winkler_foundation)->default_value(false)," ")
         ("control.winkler_flat", po::value<bool>(&p.control.winkler_flat)->default_value(false)," ")
         ("control.lithostatic", po::value<bool>(&p.control.lithostatic)->default_value(true)," ")
         ("control.init_dt", po::value<double>(&p.control.init_dt)->default_value(1.0), " ")
-        ("control.mscale", po::value<double>(&p.control.mscale)->default_value(1.0e16), " ")
+        ("control.mscale", po::value<double>(&p.control.mscale)->default_value(5.0e5), " ")
         ("control.gravity", po::value<double>(&p.control.gravity)->default_value(10.0), " ")
         ("control.thickness", po::value<double>(&p.control.thickness)->default_value(10.0e3), " ")
         ("control.winkler_rho", po::value<double>(&p.control.winkler_rho)->default_value(2700.0), " ")
+        ("control.mass_bal", po::value<bool>(&p.control.mass_bal)->default_value(false)," ")
+        ("control.dyn_damping", po::value<bool>(&p.control.dyn_damping)->default_value(true)," ")
+        ("control.dyn_factor", po::value<double>(&p.control.dyn_factor)->default_value(0.8), " ")
         ;
 
     cfg.add_options()
@@ -102,25 +113,42 @@ static void declare_parameters(po::options_description &cfg,
     cfg.add_options()
         ("mat.plastic", po::value<bool>(&p.mat.plastic)->default_value(true), " ")
         ("mat.viscoplastic", po::value<bool>(&p.mat.viscoplastic)->default_value(false), " ")
-        ("mat.lambda", po::value<double>(&p.mat.lambda)->default_value(3e10), "Lame's constant lambda")
-        ("mat.mu", po::value<double>(&p.mat.mu)->default_value(3.0e10), "Lame's constant mu (shear modulus)")
-        ("mat.weak_rad", po::value<double>(&p.mat.weak_rad)->default_value(1.0e3), "circular weakzone")
-        ("mat.weak_x", po::value<double>(&p.mat.weak_x)->default_value(50.0e3), " x coord of circular")
-        ("mat.weak_y", po::value<double>(&p.mat.weak_y)->default_value(2.0e3), "y coord of circular")
-        ("mat.weak_z", po::value<double>(&p.mat.weak_z)->default_value(0.0), "z coord of circular")
-        ("mat.ini_pls", po::value<double>(&p.mat.ini_pls)->default_value(0.5), "initial plasticity")
-        ("mat.tension_cutoff", po::value<double>(&p.mat.tension_cutoff)->default_value(0.0), " ")
-        ("mat.cohesion0", po::value<double>(&p.mat.cohesion0)->default_value(44.0e6), " ")
-        ("mat.cohesion1", po::value<double>(&p.mat.cohesion1)->default_value(4.0e6), " ")
-        ("mat.friction_angle", po::value<double>(&p.mat.friction_angle)->default_value(30.0), " ")
-        ("mat.dilation_angle", po::value<double>(&p.mat.dilation_angle)->default_value(0.0), " ")
-        ("mat.pls0", po::value<double>(&p.mat.pls0)->default_value(0.0), " ")
-        ("mat.pls1", po::value<double>(&p.mat.pls1)->default_value(0.5), " ")
-        ("mat.plastic_viscosity", po::value<double>(&p.mat.plastic_viscosity)->default_value(1.0), " ")
+        ("mat.rho", po::value<std::string>(&p.mat.rho)->default_value("[2700.0]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.lambda", po::value<std::string>(&p.mat.lambda)->default_value("[3e10]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.mu", po::value<std::string>(&p.mat.mu)->default_value("[3e10]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.weak_rad", po::value<double>(&p.mat.weak_rad)->default_value(1.0e3), "circular weakzone")//
+        ("mat.weak_x", po::value<double>(&p.mat.weak_x)->default_value(50.0e3), " x coord of circular")//
+        ("mat.weak_y", po::value<double>(&p.mat.weak_y)->default_value(2.0e3), "y coord of circular")  //
+        ("mat.weak_z", po::value<double>(&p.mat.weak_z)->default_value(0.0), "z coord of circular")    //
+        ("mat.ini_pls", po::value<double>(&p.mat.ini_pls)->default_value(0.5), "initial plasticity")   //
+        ("mat.tension_cutoff", po::value<std::string>(&p.mat.tension_cutoff)->default_value("[0.0]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.cohesion0", po::value<std::string>(&p.mat.cohesion0)->default_value("[44.0e6]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.cohesion1", po::value<std::string>(&p.mat.cohesion1)->default_value("[44.0e6]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.friction_angle", po::value<std::string>(&p.mat.friction_angle)->default_value("[30.0]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.dilation_angle", po::value<std::string>(&p.mat.dilation_angle)->default_value("[0.0]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.pls0", po::value<std::string>(&p.mat.pls0)->default_value("[0.0]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.pls1", po::value<std::string>(&p.mat.pls1)->default_value("[0.5]"),"Material indicators '[d0, d1, d2, ...]")
+        ("mat.plastic_viscosity", po::value<std::string>(&p.mat.plastic_viscosity)->default_value("[1.0]"),"Material indicators '[d0, d1, d2, ...]")
+        // ("mat.lambda", po::value<double>(&p.mat.lambda)->default_value(3e10), "Lame's constant lambda")
+        // ("mat.mu", po::value<double>(&p.mat.mu)->default_value(3.0e10), "Lame's constant mu (shear modulus)")
+        // ("mat.weak_rad", po::value<double>(&p.mat.weak_rad)->default_value(1.0e3), "circular weakzone")
+        // ("mat.weak_x", po::value<double>(&p.mat.weak_x)->default_value(50.0e3), " x coord of circular")
+        // ("mat.weak_y", po::value<double>(&p.mat.weak_y)->default_value(2.0e3), "y coord of circular")
+        // ("mat.weak_z", po::value<double>(&p.mat.weak_z)->default_value(0.0), "z coord of circular")
+        // ("mat.ini_pls", po::value<double>(&p.mat.ini_pls)->default_value(0.5), "initial plasticity")
+        // ("mat.tension_cutoff", po::value<double>(&p.mat.tension_cutoff)->default_value(0.0), " ")
+        // ("mat.cohesion0", po::value<double>(&p.mat.cohesion0)->default_value(44.0e6), " ")
+        // ("mat.cohesion1", po::value<double>(&p.mat.cohesion1)->default_value(4.0e6), " ")
+        // ("mat.friction_angle", po::value<double>(&p.mat.friction_angle)->default_value(30.0), " ")
+        // ("mat.dilation_angle", po::value<double>(&p.mat.dilation_angle)->default_value(0.0), " ")
+        // ("mat.pls0", po::value<double>(&p.mat.pls0)->default_value(0.0), " ")
+        // ("mat.pls1", po::value<double>(&p.mat.pls1)->default_value(0.5), " ")
+        // ("mat.plastic_viscosity", po::value<double>(&p.mat.plastic_viscosity)->default_value(1.0), " ")
         ;
     cfg.add_options()
         ("tmop.tmop", po::value<bool>(&p.tmop.tmop)->default_value(false), " ")
         ("tmop.amr", po::value<bool>(&p.tmop.amr)->default_value(false), " ")
+        ("tmop.ale", po::value<double>(&p.tmop.ale)->default_value(0.5), " ")
         ("tmop.remesh_steps", po::value<int>(&p.tmop.remesh_steps)->default_value(50000), " ")
         ("tmop.mesh_poly_deg", po::value<int>(&p.tmop.mesh_poly_deg)->default_value(2), " ")
         ("tmop.jitter", po::value<double>(&p.tmop.jitter)->default_value(0.0), " ")
@@ -146,12 +174,12 @@ static void declare_parameters(po::options_description &cfg,
         ("tmop.fdscheme", po::value<bool>(&p.tmop.fdscheme)->default_value(false), " ")
         ("tmop.adapt_eval", po::value<int>(&p.tmop.adapt_eval)->default_value(0), " ")
         ("tmop.exactaction", po::value<bool>(&p.tmop.exactaction)->default_value(false), " ")
-
         ("tmop.n_hr_iter", po::value<int>(&p.tmop.n_hr_iter)->default_value(5), " ")
         ("tmop.n_h_iter", po::value<int>(&p.tmop.n_h_iter)->default_value(1), " ")
         ("tmop.mesh_node_ordering", po::value<int>(&p.tmop.mesh_node_ordering)->default_value(0), " ")
         ("tmop.barrier_type", po::value<int>(&p.tmop. barrier_type)->default_value(0), " ")
         ("tmop.worst_case_type", po::value<int>(&p.tmop.worst_case_type)->default_value(0), " ")
+        ("tmop.time_reduction", po::value<double>(&p.tmop.time_reduction)->default_value(0.5), " ")
         ;
 }
 

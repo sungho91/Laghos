@@ -9,6 +9,10 @@
 #include "constants.hpp"
 #include "array2d.hpp"
 
+typedef std::vector<double> double_vec;
+typedef std::vector<int> int_vec;
+
+
 //
 // Structures for input parameters
 //
@@ -42,6 +46,16 @@ struct Solver {
     bool   impose_visc;
 };
 
+struct BC {
+    // int_vec bc_ids;
+    std::string bc_unit;
+    std::string bc_ids;
+    std::string bc_vxs;
+    std::string bc_vys;
+    std::string bc_vzs;
+};
+
+
 struct Control {
     bool   winkler_foundation;
     bool   winkler_flat;
@@ -51,6 +65,9 @@ struct Control {
     double gravity; // magnitude 
     double thickness; // meter 
     double winkler_rho; // Density of substratum
+    bool   mass_bal;
+    bool   dyn_damping;
+    double dyn_factor;
 };
 
 struct Mesh_param {
@@ -67,26 +84,44 @@ struct Mesh_param {
 struct Mat {
     bool   plastic;
     bool   viscoplastic;
-    double lambda;
-    double mu;
+    std::string rho;
+    std::string lambda;
+    std::string mu;
+    // std::string weak_rad;
+    // std::string weak_x;
+    // std::string weak_y;
+    // std::string weak_z;
+    // std::string ini_pls;
+    std::string tension_cutoff;
+    std::string cohesion0;
+    std::string cohesion1;
+    std::string friction_angle;
+    std::string dilation_angle;
+    std::string pls0;
+    std::string pls1;
+    std::string plastic_viscosity;
+
+    // double lambda;
+    // double mu;
     double weak_rad;
     double weak_x;
     double weak_y;
     double weak_z;
     double ini_pls;
-    double tension_cutoff;
-    double cohesion0;
-    double cohesion1;
-    double friction_angle;
-    double dilation_angle;
-    double pls0;
-    double pls1;
-    double plastic_viscosity;
+    // double tension_cutoff;
+    // double cohesion0;
+    // double cohesion1;
+    // double friction_angle;
+    // double dilation_angle;
+    // double pls0;
+    // double pls1;
+    // double plastic_viscosity;
 };
 
 struct TMOP {
     bool   tmop;
     bool   amr;
+    double ale;
     int    remesh_steps;
     int    mesh_poly_deg;
     double jitter;
@@ -117,11 +152,13 @@ struct TMOP {
     int    mesh_node_ordering;
     int    barrier_type;
     int    worst_case_type;
+    double time_reduction;
 };
 
 struct Param {
     Sim sim;
     Solver solver;
+    BC bc;
     Mesh_param mesh;
     Control control;
     Mat mat;

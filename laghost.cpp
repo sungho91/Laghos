@@ -61,6 +61,7 @@
 #include "parameters.hpp"
 #include "input.hpp"
 #include "laghost_tmop.hpp"
+#include "laghost_remhos.hpp"
 
 using std::cout;
 using std::endl;
@@ -109,14 +110,21 @@ int main(int argc, char *argv[])
    Array<int> cxyz; // Leave undefined. It won't be used.
    // double init_dt = 1e-1;
    double blast_energy = 0.0;
+   double v_unit = 1.0/86400/365.25;
    // double blast_energy = 1.0e-6;
    double blast_position[] = {0.0, 0.5, 0.0};
    // double blast_energy2 = 0.1;
    // double blast_position2[] = {8.0, 0.5};
+   // Mesh bounding box
+   Vector bb_min, bb_max;
 
    // Remeshing performs using the Target-Matrix Optimization Paradigm (TMOP)
    bool mesh_changed = false;
-   
+   // int  multi_comp   = 0;
+   int  n_dt   = 50;
+   //
+   double itime{1.0e-100};
+   // time_reduction{0.25};
    // Let some options be overwritten by command-line options.
    args.AddOption(&param.sim.dim, "-dim", "--dimension", "Dimension of the problem.");
    args.AddOption(&param.sim.t_final, "-tf", "--t-final",
@@ -201,8 +209,8 @@ int main(int argc, char *argv[])
                   "1  : |T|^2                          -- 2D no type\n\t"
                   "2  : 0.5|T|^2/tau-1                 -- 2D shape (condition number)\n\t"
                   "7  : |T-T^-t|^2                     -- 2D shape+size\n\t"
-                  "9  : tau*|T-T^-t|^2                 -- 2D shape+size\n\t"
-                  "14 : |T-I|^2                        -- 2D shape+size+orientation\n\t"
+                  "9  : tau*|T-T^-t|^2                 -- 2D shape+size\n\t" // not applicable
+                  "14 : |T-I|^2                        -- 2D shape+size+orientation\n\t" 
                   "22 : 0.5(|T|^2-2*tau)/(tau-tau_0)   -- 2D untangling\n\t"
                   "50 : 0.5|T^tT|^2/tau^2-1            -- 2D shape\n\t"
                   "55 : (tau-1)^2                      -- 2D size\n\t"
@@ -331,6 +339,8 @@ int main(int argc, char *argv[])
 
    args.Parse();
 
+   param.tmop.mesh_poly_deg = param.mesh.order_v;
+
    if (!args.Good())
    {
       if (mpi.Root()) { args.PrintUsage(cout); }
@@ -430,6 +440,17 @@ int main(int argc, char *argv[])
       mesh->EnsureNCMesh(true);
 
       Array<int> refs;
+      // for (int i = 0; i < mesh->GetNE(); i++)
+      // {
+      //    if(mesh->GetAttribute(i) >= 2)
+      //    {
+      //       refs.Append(i);
+      //    }
+      // }
+
+      // mesh->GeneralRefinement(refs, 1);
+      // refs.DeleteAll();
+
       for (int i = 0; i < mesh->GetNE(); i++)
       {
          if(mesh->GetAttribute(i) >= 2)
@@ -452,16 +473,16 @@ int main(int argc, char *argv[])
       mesh->GeneralRefinement(refs, 1);
       refs.DeleteAll();
 
-      for (int i = 0; i < mesh->GetNE(); i++)
-      {
-         if(mesh->GetAttribute(i) == 3)
-         {
-            refs.Append(i);
-         }
-      }
+      // for (int i = 0; i < mesh->GetNE(); i++)
+      // {
+      //    if(mesh->GetAttribute(i) == 3)
+      //    {
+      //       refs.Append(i);
+      //    }
+      // }
 
-      mesh->GeneralRefinement(refs, 1);
-      refs.DeleteAll();
+      // mesh->GeneralRefinement(refs, 1);
+      // refs.DeleteAll();
       
       mesh->Finalize(true);
    }
@@ -471,6 +492,8 @@ int main(int argc, char *argv[])
    {
       cout << "Number of zones in the serial mesh: " << mesh_NE << endl;
    }
+
+   mesh->GetBoundingBox(bb_min, bb_max, max(param.mesh.order_v, 1));
 
    // Parallel partitioning of the mesh.
    ParMesh *pmesh = nullptr;
@@ -605,6 +628,8 @@ int main(int argc, char *argv[])
    // Refine the mesh further in parallel to increase the resolution.
    for (int lev = 0; lev < param.mesh.rp_levels; lev++) { pmesh->UniformRefinement(); }
 
+   // pmesh->Rebalance();
+
    int NE = pmesh->GetNE(), ne_min, ne_max;
    MPI_Reduce(&NE, &ne_min, 1, MPI_INT, MPI_MIN, 0, pmesh->GetComm());
    MPI_Reduce(&NE, &ne_max, 1, MPI_INT, MPI_MAX, 0, pmesh->GetComm());
@@ -622,120 +647,156 @@ int main(int argc, char *argv[])
 
    // Boundary conditions: all tests use v.n = 0 on the boundary, and we assume
    // that the boundaries are straight.
+   // Remove square brackets and spaces
+   param.bc.bc_ids.erase(std::remove(param.bc.bc_ids.begin(), param.bc.bc_ids.end(), '['), param.bc.bc_ids.end());
+   param.bc.bc_ids.erase(std::remove(param.bc.bc_ids.begin(), param.bc.bc_ids.end(), ']'), param.bc.bc_ids.end());
+   param.bc.bc_ids.erase(std::remove(param.bc.bc_ids.begin(), param.bc.bc_ids.end(), ' '), param.bc.bc_ids.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss(param.bc.bc_ids);
+   std::vector<int> bc_id;
+    
+   // Temporary variable to store each token
+   std::string token;
+
+   // std::cout <<"check point1"<<std::endl;
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss, token, ',')) 
+   {bc_id.push_back(std::stoi(token)); // Convert string to int and add to vector
+   }
+
+   // std::cout <<"check point2"<<std::endl;
+
+   if(pmesh->bdr_attributes.Max() != bc_id.size())
+   {
+      if (myid == 0){cout << "The number of boundaries are not consistent with the given mesh. \nBC indicator from mesh is " << pmesh->bdr_attributes.Max() << " but input is " << bc_id.size() << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+
+   // Boundary velocity of x component
+   param.bc.bc_vxs.erase(std::remove(param.bc.bc_vxs.begin(), param.bc.bc_vxs.end(), '['), param.bc.bc_vxs.end());
+   param.bc.bc_vxs.erase(std::remove(param.bc.bc_vxs.begin(), param.bc.bc_vxs.end(), ']'), param.bc.bc_vxs.end());
+   param.bc.bc_vxs.erase(std::remove(param.bc.bc_vxs.begin(), param.bc.bc_vxs.end(), ' '), param.bc.bc_vxs.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream vxs(param.bc.bc_vxs);
+   std::vector<double> bc_vx;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(vxs, token, ',')) 
+   {bc_vx.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // Boundary velocity of y component
+   param.bc.bc_vys.erase(std::remove(param.bc.bc_vys.begin(), param.bc.bc_vys.end(), '['), param.bc.bc_vys.end());
+   param.bc.bc_vys.erase(std::remove(param.bc.bc_vys.begin(), param.bc.bc_vys.end(), ']'), param.bc.bc_vys.end());
+   param.bc.bc_vys.erase(std::remove(param.bc.bc_vys.begin(), param.bc.bc_vys.end(), ' '), param.bc.bc_vys.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream vys(param.bc.bc_vys);
+   std::vector<double> bc_vy;
+
+   // Tokenize the string and convert tokens to integers
+   while (getline(vys, token, ',')) 
+   {bc_vy.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // Boundary velocity of z component
+   param.bc.bc_vzs.erase(std::remove(param.bc.bc_vzs.begin(), param.bc.bc_vzs.end(), '['), param.bc.bc_vzs.end());
+   param.bc.bc_vzs.erase(std::remove(param.bc.bc_vzs.begin(), param.bc.bc_vzs.end(), ']'), param.bc.bc_vzs.end());
+   param.bc.bc_vzs.erase(std::remove(param.bc.bc_vzs.begin(), param.bc.bc_vzs.end(), ' '), param.bc.bc_vzs.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream vzs(param.bc.bc_vzs);
+   std::vector<double> bc_vz;
+
+   // Tokenize the string and convert tokens to integers
+   while (getline(vzs, token, ',')) 
+   {bc_vz.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   if(param.bc.bc_unit =="cm/yr")
+   {v_unit = v_unit/100.0;}
+   else if(param.bc.bc_unit =="mm/yr")
+   {v_unit = v_unit/1000.0;}
+
+   // Dirichlet type boundary condition (i.e., fixing velocity component at boundaries)
    Array<int> ess_tdofs, ess_vdofs;
    {
       Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
+      for (int i = 0; i < bc_id.size(); ++i) 
+      {
+        ess_bdr = 0;
+        if(bc_id[i] > 0)
+        {
+            if(dim == 2)
+            {
+               switch (bc_id[i])
+               {
+                  // case 1 : x compoent is constained
+                  // case 2 : y compoent is constained
+                  // case 3 : all compoents are constained
+                  case 1: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,0); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
+                  case 2: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
+                  case 3: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
+                  default:
+                     if (myid == 0)
+                     {
+                        cout << "Unknown boundary type: " << bc_id[i] << '\n';
+                     }
+                     delete pmesh;
+                     MPI_Finalize();
+                     return 3;
+               }
+            }
+            else
+            {
+               switch (bc_id[i])
+               {
+                  // case 1 : x compoent is constained
+                  // case 2 : y compoent is constained
+                  // case 3 : z compoent is constained
+                  // case 4 : all compoents are constained
+                  // case 5 : x and y compoents are constained
+                  // case 6 : x and z compoents are constained
+                  // case 7 : y and z compoents are constained
+                  case 1: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,0); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
+                  case 2: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
+                  case 3: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,2); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
+                  case 4: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
+                  case 5: 
+                     ess_bdr[i] = 1; 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,0); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
+                     break;
+                  case 6: 
+                     ess_bdr[i] = 1; 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,2); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
+                     break;
+                  case 7: 
+                     ess_bdr[i] = 1; 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,2); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,3); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,3); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
 
-      /*
-      // Body force test problem in 2D
-      // Fix bottom surface
-      ess_bdr = 0; ess_bdr[0] = 1; 
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      // Fix x component on side surface
-      ess_bdr = 0; ess_bdr[2] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-      */
-      
-      
-      /*
-      // Body force test problem
-      // x compoent is constained in left and right sides 
-      ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      // Bottom is fixed
-      ess_bdr = 0; ess_bdr[2] = 1; 
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      // y compoent is constained in left and right sides 
-      ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-      */
-
-      // /*Plastic Oedometer Test boundary condition*/
-      // // x compoent is constained in left and right sides 
-      // ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
-      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 0);
-      // ess_tdofs.Append(dofs_list);
-      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 0);
-      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      // ess_vdofs.Append(dofs_list);
-
-      // // z compoent is constained in top and bottom sides
-      // ess_bdr = 0; ess_bdr[2] = 1; ess_bdr[3] = 1;
-      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 2);
-      // ess_tdofs.Append(dofs_list);
-      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 2);
-      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      // ess_vdofs.Append(dofs_list);
-
-      // // y compoent is constained in front and back sides 
-      // ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
-      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
-      // ess_tdofs.Append(dofs_list);
-      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
-      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      // ess_vdofs.Append(dofs_list);
-
-      /*Core Complex*/
-      // x compoent is constained in left and right sides 
-      ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
-      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,0);
-      ess_tdofs.Append(dofs_list);
-      H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0);
-      FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      ess_vdofs.Append(dofs_list);
-
-      // // z compoent is constained in bottom side
-      // ess_bdr = 0; ess_bdr[2] = 1; 
-      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, dim-1);
-      // ess_tdofs.Append(dofs_list);
-      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, dim-1);
-      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      // ess_vdofs.Append(dofs_list);
-
-      // // y compoent is constained in front and back sides 
-      // ess_bdr = 0; ess_bdr[4] = 1; ess_bdr[5] = 1;
-      // H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 1);
-      // ess_tdofs.Append(dofs_list);
-      // H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 1);
-      // FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-      // ess_vdofs.Append(dofs_list);
+                  default:
+                     if (myid == 0)
+                     {
+                        cout << "Unknown boundary type: " << bc_id[i] << '\n';
+                     }
+                     delete pmesh;
+                     MPI_Finalize();
+                     return 3;
+               }
+            }
+        }
+      }
    }
 
-   // Neumann boundary for Winkler foundation
-   // Array<int> surf_ess_tdofs, surf_ess_vdofs;
-   // {
-   //    Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list;
-   //    // z compoent is constained in top and bottom sides
-   //    ess_bdr = 0; ess_bdr[3] = 1;
-   //    H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list, 2);
-   //    surf_ess_tdofs.Append(dofs_list);
-   //    H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker, 2);
-   //    FiniteElementSpace::MarkerToList(dofs_marker, dofs_list);
-   //    surf_ess_vdofs.Append(dofs_list);
-   // }
+   Vector bc_id_pa(pmesh->bdr_attributes.Max());
+   for (int i = 0; i < bc_id.size(); ++i){bc_id_pa[i]=bc_id[i];}
 
    // Define the explicit ODE solver used for time integration.
    ODESolver *ode_solver = NULL;
@@ -803,32 +864,180 @@ int main(int argc, char *argv[])
    // Sync the data location of x_gf with its base, S
    x_gf.SyncAliasMemory(S);
 
-   // xyz coordinates in L2 space
-   ParGridFunction x_gf_l2(&L2FESpace);
-   ParGridFunction y_gf_l2(&L2FESpace);
-   ParGridFunction z_gf_l2(&L2FESpace);
-   x_gf_l2 = 0.0; y_gf_l2 = 0.0; z_gf_l2 = 0.0;
-   FunctionCoefficient x_coeff(x_l2);
-   FunctionCoefficient y_coeff(y_l2);
-   x_gf_l2.ProjectCoefficient(x_coeff);
-   y_gf_l2.ProjectCoefficient(y_coeff);
 
-   if(dim == 3)
-   {
-      FunctionCoefficient z_coeff(z_l2);
-      z_gf_l2.ProjectCoefficient(z_coeff);
-   }
+   // // Create a "sub mesh" from the boundary elements with attribute 3 (top boundary) for Surface process
+   // Array<int> bdr_attrs(1);
+   // bdr_attrs[0] = 4;
+   // ParSubMesh submesh(ParSubMesh::CreateFromBoundary(*pmesh, bdr_attrs));
+   // ParFiniteElementSpace sub_fespace0(&submesh, &H1FEC, pmesh->Dimension()); // nodes of submesh
+   // ParFiniteElementSpace sub_fespace1(&submesh, &H1FEC); // topography
+
+   // // Solve a Poisson problem on the boundary. This just follows ex0p.
+   // Array<int> boundary_dofs;
+   // sub_fespace1.GetBoundaryTrueDofs(boundary_dofs);
+   // ParGridFunction x_top(&sub_fespace0);
+   // ParGridFunction topo(&sub_fespace1);
+   // topo=param.control.thickness;
+   // submesh.SetNodalGridFunction(&x_top);
    
+   // for (int i = 0; i < x.Size(); i++)
+   // {
+   //   std::cout << i << "/"<< x.Size() << "," << x[i] << std::endl;
+   // }
+
+   // for (int i = 0; i < boundary_dofs.Size(); i++)
+   // {
+   //   std::cout << i << "/"<< boundary_dofs.Size() << "," << x[boundary_dofs[i]] << std::endl;
+   // }
+
+   // ParaViewDataCollection *pdd = NULL;
+   // if (param.sim.paraview)
+   // {
+   //    pdd = new ParaViewDataCollection("test", &submesh);
+   //    pdd->SetPrefixPath("ParaView");
+   //    pdd->RegisterField("test",  &x);
+   //    pdd->SetDataFormat(VTKFormat::BINARY);
+   //    pdd->SetHighOrderOutput(true);
+   //    pdd->SetCycle(0);
+   //    pdd->SetTime(0.0);
+   //    pdd->Save();
+   // }
+
+
+   // ParSubMesh::Transfer(x, x_gf); // update adjusted nodes on top boundary 
+
+   // Array<int> boundary_dofs;
+   // sub_fespace.GetBoundaryTrueDofs(boundary_dofs);
+   // ParGridFunction x_top(&sub_fespace);
+   // // std::cout<<x_top.Size() <<std::endl;
+   // x_top = param.control.thickness;
+   // ConstantCoefficient diffusivity(1e-6);
+   // ParLinearForm b_top(&sub_fespace);
+   // b_top.AddDomainIntegrator(new DomainLFIntegrator(diffusivity));
+   // b_top.Assemble();
+   // ParBilinearForm a_top(&sub_fespace);
+   // a_top.AddDomainIntegrator(new DiffusionIntegrator);
+   // a_top.Assemble();
+
+   // // Surface diffusion
+   // HypreParMatrix A_top;
+   // Vector B_top, X_top;
+   // // b_top *= dt;
+   // a_top.FormLinearSystem(boundary_dofs, x_top, b_top, A_top, X_top, B_top);
+   // HypreBoomerAMG M_top(A_top);
+   // CGSolver cg(MPI_COMM_WORLD);
+   // cg.SetRelTol(1e-12);
+   // cg.SetMaxIter(2000);
+   // cg.SetPrintLevel(1);
+   // cg.SetPreconditioner(M_top);
+   // cg.SetOperator(A_top);
+   // cg.Mult(B_top, X_top);
+   // a_top.RecoverFEMSolution(X_top, b_top, x_top);
+   // ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
+
+
+   // xyz coordinates in L2 space
+   // ParGridFunction x_gf_l2(&L2FESpace);
+   // ParGridFunction y_gf_l2(&L2FESpace);
+   // ParGridFunction z_gf_l2(&L2FESpace);
+   // x_gf_l2 = 0.0; y_gf_l2 = 0.0; z_gf_l2 = 0.0;
+   // FunctionCoefficient x_coeff(x_l2);
+   // FunctionCoefficient y_coeff(y_l2);
+   // x_gf_l2.ProjectCoefficient(x_coeff);
+   // y_gf_l2.ProjectCoefficient(y_coeff);
+
+   // if(dim == 3)
+   // {
+   //    FunctionCoefficient z_coeff(z_l2);
+   //    z_gf_l2.ProjectCoefficient(z_coeff);
+   // }
+
+   // xyz coordinates in L2 space
+   ParFiniteElementSpace L2FESpace_xyz(pmesh, &L2FEC, dim); //
+   ParGridFunction xyz_gf_l2(&L2FESpace_xyz);
+   VectorFunctionCoefficient xyz_coeff(pmesh->Dimension(), xyz0);
+   xyz_gf_l2.ProjectCoefficient(xyz_coeff);
 
    // Initialize the velocity.
    v_gf = 0.0;
+   // PlasticCoefficient p_coeff(dim, xyz_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);
    VectorFunctionCoefficient v_coeff(pmesh->Dimension(), v0);
    v_gf.ProjectCoefficient(v_coeff);
-   
-   for (int i = 0; i < ess_vdofs.Size(); i++)
+
+   for (int i = 0; i < bc_id.size(); ++i) 
    {
-      // v_gf(ess_vdofs[i]) = 0.0;
+      Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list1, dofs_list2, dofs_list3;
+      if(bc_id[i] > 0)
+      {
+         ess_bdr = 0;
+         if(dim == 2)
+         {
+            switch (bc_id[i])
+            {
+               // case 1 : x compoent is constained
+               // case 2 : y compoent is constained
+               // case 3 : all compoents are constained
+               case 1: ess_bdr[i] = 1; H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list1); for (int j = 0; j < dofs_list1.Size(); j++){v_gf(dofs_list1[j]) = v_unit*bc_vx[i];} break;
+               case 2: ess_bdr[i] = 1; H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list2); for (int j = 0; j < dofs_list2.Size(); j++){v_gf(dofs_list2[j]) = v_unit*bc_vy[i];} break;
+               case 3: ess_bdr[i] = 1; 
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list1); for (int j = 0; j < dofs_list1.Size(); j++){v_gf(dofs_list1[j]) = v_unit*bc_vx[i];}
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list2); for (int j = 0; j < dofs_list2.Size(); j++){v_gf(dofs_list2[j]) = v_unit*bc_vy[i];} break;
+               
+               default:
+                  if (myid == 0)
+                  {
+                        cout << "Unknown boundary type: " << bc_id[i] << '\n';
+                  }
+                  delete pmesh;
+                  MPI_Finalize();
+                  return 3;
+            }
+         }
+         else
+         {
+            switch (bc_id[i])
+            {
+               // case 1 : x compoent is constained
+               // case 2 : y compoent is constained
+               // case 3 : z compoent is constained
+               // case 4 : all compoents are constained
+               // case 5 : x and y compoents are constained
+               // case 6 : x and z compoents are constained
+               // case 7 : y and z compoents are constained
+               case 1: ess_bdr[i] = 1; H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list1); for (int j = 0; j < dofs_list1.Size(); j++){v_gf(dofs_list1[j]) = v_unit*bc_vx[i];} break;
+               case 2: ess_bdr[i] = 1; H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list2); for (int j = 0; j < dofs_list2.Size(); j++){v_gf(dofs_list2[j]) = v_unit*bc_vy[i];} break;
+               case 3: ess_bdr[i] = 1; H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list3); for (int j = 0; j < dofs_list3.Size(); j++){v_gf(dofs_list3[j]) = v_unit*bc_vz[i];} break;
+               case 4: ess_bdr[i] = 1; 
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list1); for (int j = 0; j < dofs_list1.Size(); j++){v_gf(dofs_list1[j]) = v_unit*bc_vx[i];}
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list2); for (int j = 0; j < dofs_list2.Size(); j++){v_gf(dofs_list2[j]) = v_unit*bc_vy[i];}
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list3); for (int j = 0; j < dofs_list3.Size(); j++){v_gf(dofs_list3[j]) = v_unit*bc_vz[i];} break;
+               case 5: ess_bdr[i] = 1; 
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list1); for (int j = 0; j < dofs_list1.Size(); j++){v_gf(dofs_list1[j]) = v_unit*bc_vx[i];}
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list2); for (int j = 0; j < dofs_list2.Size(); j++){v_gf(dofs_list2[j]) = v_unit*bc_vy[i];} break;
+               case 6: ess_bdr[i] = 1;
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list1); for (int j = 0; j < dofs_list1.Size(); j++){v_gf(dofs_list1[j]) = v_unit*bc_vx[i];}
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list3); for (int j = 0; j < dofs_list3.Size(); j++){v_gf(dofs_list3[j]) = v_unit*bc_vz[i];} break;
+               case 7: ess_bdr[i] = 1;
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list2); for (int j = 0; j < dofs_list2.Size(); j++){v_gf(dofs_list2[j]) = v_unit*bc_vy[i];}
+                       H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list3); for (int j = 0; j < dofs_list3.Size(); j++){v_gf(dofs_list3[j]) = v_unit*bc_vz[i];} break;
+
+               default:
+                  if (myid == 0)
+                  {
+                     cout << "Unknown boundary type: " << bc_id[i] << '\n';
+                  }
+                  delete pmesh;
+                  MPI_Finalize();
+                  return 3;
+            }
+         }
+      }
    }
+
+   // for (int i = 0; i < ess_vdofs.Size(); i++)
+   // {
+   //    v_gf(ess_vdofs[i]) = 0.0;
+   // }
 
    // For the Sedov test, we use a delta function at the origin.
    // Vector dir(pmesh->Dimension());
@@ -849,6 +1058,160 @@ int main(int argc, char *argv[])
    // Sync the data location of v_gf with its base, S
    v_gf.SyncAliasMemory(S);
 
+   // String (Material) extraction
+   param.mat.rho.erase(std::remove(param.mat.rho.begin(), param.mat.rho.end(), '['), param.mat.rho.end());
+   param.mat.rho.erase(std::remove(param.mat.rho.begin(), param.mat.rho.end(), ']'), param.mat.rho.end());
+   param.mat.rho.erase(std::remove(param.mat.rho.begin(), param.mat.rho.end(), ' '), param.mat.rho.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss2(param.mat.rho);
+   std::vector<double> rho_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss2, token, ',')) 
+   {rho_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   param.mat.lambda.erase(std::remove(param.mat.lambda.begin(), param.mat.lambda.end(), '['), param.mat.lambda.end());
+   param.mat.lambda.erase(std::remove(param.mat.lambda.begin(), param.mat.lambda.end(), ']'), param.mat.lambda.end());
+   param.mat.lambda.erase(std::remove(param.mat.lambda.begin(), param.mat.lambda.end(), ' '), param.mat.lambda.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss3(param.mat.lambda);
+   std::vector<double> lambda_vec;
+
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss3, token, ',')) 
+   {
+      lambda_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.mu.erase(std::remove(param.mat.mu.begin(), param.mat.mu.end(), '['), param.mat.mu.end());
+   param.mat.mu.erase(std::remove(param.mat.mu.begin(), param.mat.mu.end(), ']'), param.mat.mu.end());
+   param.mat.mu.erase(std::remove(param.mat.mu.begin(), param.mat.mu.end(), ' '), param.mat.mu.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss4(param.mat.mu);
+   std::vector<double> mu_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss4, token, ',')) 
+   {mu_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.tension_cutoff.erase(std::remove(param.mat.tension_cutoff.begin(), param.mat.tension_cutoff.end(), '['), param.mat.tension_cutoff.end());
+   param.mat.tension_cutoff.erase(std::remove(param.mat.tension_cutoff.begin(), param.mat.tension_cutoff.end(), ']'), param.mat.tension_cutoff.end());
+   param.mat.tension_cutoff.erase(std::remove(param.mat.tension_cutoff.begin(), param.mat.tension_cutoff.end(), ' '), param.mat.tension_cutoff.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss5(param.mat.tension_cutoff);
+   std::vector<double> tension_cutoff_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss5, token, ',')) 
+   {tension_cutoff_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+   
+   // String (Material) extraction
+   param.mat.cohesion0.erase(std::remove(param.mat.cohesion0.begin(), param.mat.cohesion0.end(), '['), param.mat.cohesion0.end());
+   param.mat.cohesion0.erase(std::remove(param.mat.cohesion0.begin(), param.mat.cohesion0.end(), ']'), param.mat.cohesion0.end());
+   param.mat.cohesion0.erase(std::remove(param.mat.cohesion0.begin(), param.mat.cohesion0.end(), ' '), param.mat.cohesion0.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss6(param.mat.cohesion0);
+   std::vector<double> cohesion0_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss6, token, ',')) 
+   {cohesion0_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.cohesion1.erase(std::remove(param.mat.cohesion1.begin(), param.mat.cohesion1.end(), '['), param.mat.cohesion1.end());
+   param.mat.cohesion1.erase(std::remove(param.mat.cohesion1.begin(), param.mat.cohesion1.end(), ']'), param.mat.cohesion1.end());
+   param.mat.cohesion1.erase(std::remove(param.mat.cohesion1.begin(), param.mat.cohesion1.end(), ' '), param.mat.cohesion1.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss7(param.mat.cohesion1);
+   std::vector<double> cohesion1_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss7, token, ',')) 
+   {cohesion1_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.friction_angle.erase(std::remove(param.mat.friction_angle.begin(), param.mat.friction_angle.end(), '['), param.mat.friction_angle.end());
+   param.mat.friction_angle.erase(std::remove(param.mat.friction_angle.begin(), param.mat.friction_angle.end(), ']'), param.mat.friction_angle.end());
+   param.mat.friction_angle.erase(std::remove(param.mat.friction_angle.begin(), param.mat.friction_angle.end(), ' '), param.mat.friction_angle.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss8(param.mat.friction_angle);
+   std::vector<double> friction_angle_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss8, token, ',')) 
+   {friction_angle_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.dilation_angle.erase(std::remove(param.mat.dilation_angle.begin(), param.mat.dilation_angle.end(), '['), param.mat.dilation_angle.end());
+   param.mat.dilation_angle.erase(std::remove(param.mat.dilation_angle.begin(), param.mat.dilation_angle.end(), ']'), param.mat.dilation_angle.end());
+   param.mat.dilation_angle.erase(std::remove(param.mat.dilation_angle.begin(), param.mat.dilation_angle.end(), ' '), param.mat.dilation_angle.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss9(param.mat.dilation_angle);
+   std::vector<double> dilation_angle_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss9, token, ',')) 
+   {dilation_angle_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.pls0.erase(std::remove(param.mat.pls0.begin(), param.mat.pls0.end(), '['), param.mat.pls0.end());
+   param.mat.pls0.erase(std::remove(param.mat.pls0.begin(), param.mat.pls0.end(), ']'), param.mat.pls0.end());
+   param.mat.pls0.erase(std::remove(param.mat.pls0.begin(), param.mat.pls0.end(), ' '), param.mat.pls0.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss10(param.mat.pls0);
+   std::vector<double> pls0_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss10, token, ',')) 
+   {pls0_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.pls1.erase(std::remove(param.mat.pls1.begin(), param.mat.pls1.end(), '['), param.mat.pls1.end());
+   param.mat.pls1.erase(std::remove(param.mat.pls1.begin(), param.mat.pls1.end(), ']'), param.mat.pls1.end());
+   param.mat.pls1.erase(std::remove(param.mat.pls1.begin(), param.mat.pls1.end(), ' '), param.mat.pls1.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss11(param.mat.pls1);
+   std::vector<double> pls1_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss11, token, ',')) 
+   {pls1_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.plastic_viscosity.erase(std::remove(param.mat.plastic_viscosity.begin(), param.mat.plastic_viscosity.end(), '['), param.mat.plastic_viscosity.end());
+   param.mat.plastic_viscosity.erase(std::remove(param.mat.plastic_viscosity.begin(), param.mat.plastic_viscosity.end(), ']'), param.mat.plastic_viscosity.end());
+   param.mat.plastic_viscosity.erase(std::remove(param.mat.plastic_viscosity.begin(), param.mat.plastic_viscosity.end(), ' '), param.mat.plastic_viscosity.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss12(param.mat.plastic_viscosity);
+   std::vector<double> plastic_viscosity_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss12, token, ',')) 
+   {plastic_viscosity_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
    // Initialize density and specific internal energy values. We interpolate in
    // a non-positive basis to get the correct values at the dofs. Then we do an
    // L2 projection to the positive basis in which we actually compute. The goal
@@ -856,9 +1219,31 @@ int main(int argc, char *argv[])
    // this density is a temporary function and it will not be updated during the
    // time evolution.
    Vector z_rho(pmesh->attributes.Max());
-   z_rho = 2700.0;
    Vector s_rho(pmesh->attributes.Max());
-   s_rho = 2700.0 * param.control.mscale;
+
+   // std::cout << "rho, " << rho_vec[0] << std::endl;
+   // std::cout << "lambda, " << lambda_vec[0] << std::endl;
+   // std::cout << "mu, " << mu_vec[0] << std::endl;
+   // std::cout << "tension_cutoff, " << tension_cutoff_vec[0] << std::endl;
+   // std::cout << "cohesion0, " << cohesion0_vec[0] << std::endl;
+   // std::cout << "cohesion1, " << cohesion1_vec[0] << std::endl;
+   // std::cout << "friction_angle, " << friction_angle_vec[0] << std::endl;
+   // std::cout << "dilation_angle, " << dilation_angle_vec[0] << std::endl;
+   // std::cout << "pls0, " << pls0_vec[0] << std::endl;
+   // std::cout << "pls1, " << pls1_vec[0] << std::endl;
+
+   if(rho_vec.size() == 1) {z_rho =rho_vec[0]; s_rho =rho_vec[0] * param.control.mscale;}
+   else if(rho_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of rho are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {z_rho[i] = rho_vec[i]; s_rho[i] = rho_vec[i] * param.control.mscale;}}
+   
+   // z_rho = 2700.0;
+   // s_rho = 2700.0 * param.control.mscale;
 
    ParGridFunction rho0_gf(&L2FESpace);
    PWConstCoefficient rho0_coeff(z_rho);
@@ -900,15 +1285,30 @@ int main(int argc, char *argv[])
    // Piecewise constant elastic stiffness over the Lagrangian mesh.
    // Lambda and Mu is Lame's first and second constants
    Vector lambda(pmesh->attributes.Max());
-   lambda = param.mat.lambda;
-   // lambda = 50e9-30e9*(2.0/3.0);
-   // lambda = 30e9;
-   // lambda = 1.0e6;
-   PWConstCoefficient lambda_func(lambda);
    Vector mu(pmesh->attributes.Max());
-   mu = param.mat.mu;
-   // mu = 1.0e6;
-   // mu = 30e9;
+   // lambda = param.mat.lambda;
+   // mu = param.mat.mu;
+   if(lambda_vec.size() == 1) {lambda =lambda_vec[0];}
+   else if(lambda_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of lambda are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {lambda[i] = lambda_vec[i];}}
+
+   if(mu_vec.size() == 1) {mu =mu_vec[0];}
+   else if(mu_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of mu are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {mu[i] = mu_vec[i];}}
+
+   PWConstCoefficient lambda_func(lambda);
    PWConstCoefficient mu_func(mu);
    
    // Project PWConstCoefficient to grid function
@@ -945,55 +1345,152 @@ int main(int argc, char *argv[])
    Vector plastic_viscosity(pmesh->attributes.Max());
    Vector pls0(pmesh->attributes.Max());
    Vector pls1(pmesh->attributes.Max());
-   tension_cutoff = param.mat.tension_cutoff;
-   cohesion0 = param.mat.cohesion0;
-   cohesion1 = param.mat.cohesion1;
-   friction_angle = param.mat.friction_angle;
-   dilation_angle = param.mat.dilation_angle;
-   pls0 = param.mat.pls0;
-   pls1 = param.mat.pls1;
+   // tension_cutoff = param.mat.tension_cutoff;
+   // cohesion0 = param.mat.cohesion0;
+   // cohesion1 = param.mat.cohesion1;
+   // friction_angle = param.mat.friction_angle;
+   // dilation_angle = param.mat.dilation_angle;
+   // pls0 = param.mat.pls0;
+   // pls1 = param.mat.pls1;
+
+   if(tension_cutoff_vec.size() == 1) {tension_cutoff =tension_cutoff_vec[0];}
+   else if(tension_cutoff_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of tension_cutoff are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {tension_cutoff[i] = tension_cutoff_vec[i];}}
+
+   if(cohesion0_vec.size() == 1) {cohesion0 =cohesion0_vec[0];}
+   else if(cohesion0_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of cohesion0 are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {cohesion0[i] = cohesion0_vec[i];}}
+
+   if(cohesion1_vec.size() == 1) {cohesion1 =cohesion1_vec[0];}
+   else if(cohesion1_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of cohesion1 are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {cohesion1[i] = cohesion1_vec[i];}}
+
+   if(friction_angle_vec.size() == 1) {friction_angle =friction_angle_vec[0];}
+   else if(friction_angle_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of friction_angle are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {friction_angle[i] = friction_angle_vec[i];}}
+
+   if(dilation_angle_vec.size() == 1) {dilation_angle =dilation_angle_vec[0];}
+   else if(dilation_angle_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of dilation_angle are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {dilation_angle[i] = dilation_angle_vec[i];}}
+
+   if(pls0_vec.size() == 1) {pls0 =pls0_vec[0];}
+   else if(pls0_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of pls0 are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {pls0[i] = pls0_vec[i];}}
+
+   if(pls1_vec.size() == 1) {pls1 =pls1_vec[0];}
+   else if(pls1_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of pls1 are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {pls1[i] = pls1_vec[i];}}
+
    if(param.mat.viscoplastic)
    {
-      plastic_viscosity = param.mat.plastic_viscosity;
+      if(plastic_viscosity_vec.size() == 1) {plastic_viscosity =plastic_viscosity_vec[0];}
+      else if(plastic_viscosity_vec.size() != pmesh->attributes.Max())
+      {
+         if (myid == 0){cout << "The number of plastic_viscosity are not consistent with material ID in the given mesh." << endl; }        
+         delete pmesh;
+         MPI_Finalize();
+         return 3;
+      }
+      else {for (int i = 0; i < pmesh->attributes.Max(); i++) {plastic_viscosity[i] = plastic_viscosity_vec[i];}}
    }
    else
    {
+      if (myid == 0){cout << "viscoplasticity is not activate." << endl; }        
       plastic_viscosity = 1.0e+300;
    }
    
    // lithostatic pressure
    s_gf=0.0;
+
    if(param.control.lithostatic)
    {
-      LithostaticCoefficient Lithostatic_coeff(dim, y_gf_l2, z_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
+      LithostaticCoefficient Lithostatic_coeff(dim, xyz_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
+      // LithostaticCoefficient Lithostatic_coeff(dim, y_gf_l2, z_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
       s_gf.ProjectCoefficient(Lithostatic_coeff);
    }   
+
    s_gf.SyncAliasMemory(S);
+
+   // for(int i = 0; i < s_gf.Size()/3; i++)
+   // {
+   //    cout << "sxx " << s_gf[i+0*s_gf.Size()/3] << ", syy " << s_gf[i+1*s_gf.Size()/3] << ", sxy " << s_gf[i+2*s_gf.Size()/3] << endl;;
+   // }
 
    ParGridFunction s_old_gf(&L2FESpace_stress);
    s_old_gf=0.0;
-   
+
    // Initial geometry
    x_ini_gf = x_gf; 
    x_ini_gf.SyncAliasMemory(S);
+   ParGridFunction x_old_gf(&H1FESpace);
+   x_old_gf = 0.0;
 
    // Plastic strain (J2 strain invariant)
    ParGridFunction p_gf(&L2FESpace);
-   p_gf=0.0;
+   ParGridFunction p_gf_old(&L2FESpace);
+   p_gf=0.0; p_gf_old = 0.0;
    Vector weak_location(dim);
    if(dim = 2){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y;}
    else if(dim =3){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y; weak_location[2] = param.mat.weak_z;}
-   PlasticCoefficient p_coeff(dim, x_gf_l2, y_gf_l2, z_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);
+   PlasticCoefficient p_coeff(dim, xyz_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);
+   // PlasticCoefficient p_coeff(dim, x_gf_l2, y_gf_l2, z_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);
+   
    p_gf.ProjectCoefficient(p_coeff);
-
+   p_gf_old = p_gf;
    // Non-initial plastic strain
    ParGridFunction ini_p_gf(&L2FESpace);
+   ParGridFunction ini_p_old_gf(&L2FESpace);
    ParGridFunction n_p_gf(&L2FESpace);
-   ini_p_gf=p_gf; n_p_gf=0.0;
+   ini_p_gf=p_gf; ini_p_old_gf=p_gf;
+   n_p_gf=0.0;
 
+   
    ParGridFunction u_gf(&H1FESpace);  // Displacment
    u_gf = 0.0;
 
+   
    // Flattening node
    ParLinearForm flattening(&H1FESpace); 
    Array<int> nbc_bdr(pmesh->bdr_attributes.Max());   
@@ -1018,20 +1515,21 @@ int main(int argc, char *argv[])
    // mat_gf.ProjectCoefficient(mat_coeff);
    
    int source = 0; bool visc = false, vorticity = false;
-   switch (param.sim.problem)
-   {
-      case 0: if (pmesh->Dimension() == 2) { source = 1; } visc = false; break;
-      case 1: visc = true; break;
-      case 2: visc = true; break;
-      case 3: visc = true; S.HostRead(); break;
-      case 4: visc = false; break;
-      case 5: visc = true; break;
-      case 6: visc = true; break;
-      case 7: source = 2; visc = true; vorticity = true;  break;
-      default: MFEM_ABORT("Wrong problem specification!");
-   }
+   // switch (param.sim.problem)
+   // {
+   //    case 0: if (pmesh->Dimension() == 2) { source = 1; } visc = false; break;
+   //    case 1: visc = true; break;
+   //    case 2: visc = true; break;
+   //    case 3: visc = true; S.HostRead(); break;
+   //    case 4: visc = false; break;
+   //    case 5: visc = true; break;
+   //    case 6: visc = true; break;
+   //    case 7: source = 2; visc = true; vorticity = true;  break;
+   //    default: MFEM_ABORT("Wrong problem specification!");
+   // }
    if (param.solver.impose_visc) { visc = true; }
 
+   // std::cout << "calling LagrangianGeoOperator" << endl;
    geodynamics::LagrangianGeoOperator geo(S.Size(),
                                           H1FESpace, L2FESpace, L2FESpace_stress, ess_tdofs,
                                           rho0_coeff, scale_rho0_coeff, rho0_gf,
@@ -1040,14 +1538,16 @@ int main(int argc, char *argv[])
                                           param.solver.cg_tol, param.solver.cg_max_iter, 
                                           param.solver.ftz_tol,
                                           param.mesh.order_q, lambda0_gf, mu0_gf, param.control.mscale, param.control.gravity, param.control.thickness,
-                                          lambda, mu, tension_cutoff, cohesion0, friction_angle, dilation_angle, param.control.winkler_foundation, param.control.winkler_rho);
+                                          param.control.winkler_foundation, param.control.winkler_rho, param.control.dyn_damping, param.control.dyn_factor, bc_id_pa);
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
    int  visport   = 19916;
 
    ParGridFunction rho_gf;
-   if (param.sim.visualization || param.sim.visit || param.sim.paraview) { geo.ComputeDensity(rho_gf); }
+   // if (param.sim.visualization || param.sim.visit || param.sim.paraview) { geo.ComputeDensity(rho_gf); }
+   // if (mass_bal) { geo.ComputeDensity(rho_gf); }
+   geo.ComputeDensity(rho_gf);
    const double energy_init = geo.InternalEnergy(e_gf) +
                               geo.KineticEnergy(v_gf);
 
@@ -1102,6 +1602,7 @@ int main(int argc, char *argv[])
       pd->RegisterField("Specific Internal Energy", &e_gf);
       pd->RegisterField("Stress", &s_gf);
       pd->RegisterField("Plastic Strain", &p_gf);
+      pd->RegisterField("inital Plastic Strain", &ini_p_gf);
       pd->RegisterField("Non-inital Plastic Strain", &n_p_gf);
       pd->SetLevelsOfDetail(param.mesh.order_v);
       pd->SetDataFormat(VTKFormat::BINARY);
@@ -1117,9 +1618,9 @@ int main(int argc, char *argv[])
    // defines the Mult() method that used by the time integrators.
    ode_solver->Init(geo);
    geo.ResetTimeStepEstimate();
-   double t = 0.0, dt = 0.0, t_old, dt_old = 0.0;
+   double t = 0.0, dt = 0.0, t_old, dt_old = 0.0, h_min_ini = 1.0, h_min = 1.0;
    dt = geo.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
-   
+   h_min = geo.GetLengthEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
    // dt = init_dt;
    bool last_step = false;
    int steps = 0;
@@ -1154,6 +1655,30 @@ int main(int argc, char *argv[])
       std::cout<<"simulation starts"<<std::endl;
    }
 
+   // Estimate element errors using the Zienkiewicz-Zhu error estimator.
+   // Vector errors(pmesh->GetNE()); errors=0.0;
+   // if(param.tmop.amr)
+   // {
+   //    // 11. As in Example 6p, we also need a refiner. This time the refinement
+   //    //     strategy is based on a fixed threshold that is applied locally to each
+   //    //     element. The global threshold is turned off by setting the total error
+   //    //     fraction to zero. We also enforce a maximum refinement ratio between
+   //    //     adjacent elements.
+   //    ThresholdRefiner refiner(&errors);
+   //    refiner.SetTotalErrorFraction(0.0); // use purely local threshold
+   //    refiner.SetLocalErrorGoal(1e-4);
+   //    refiner.PreferConformingRefinement();
+   //    refiner.SetNCLimit(2);
+
+   //    // 12. A derefiner selects groups of elements that can be coarsened to form
+   //    //     a larger element. A conservative enough threshold needs to be set to
+   //    //     prevent derefining elements that would immediately be refined again.
+   //    ThresholdDerefiner derefiner(&errors);
+   //    derefiner.SetThreshold(1e-4 * 0.25);
+   //    derefiner.SetNCLimit(2);
+   // }
+
+
    for (int ti = 1; !last_step; ti++)
    {
       if (t + dt >= param.sim.t_final)
@@ -1164,51 +1689,459 @@ int main(int argc, char *argv[])
       if (steps == param.sim.max_tsteps) { last_step = true; }
       S_old = S;
       t_old = t;
+      p_gf_old = p_gf; ini_p_old_gf = ini_p_gf;
       geo.ResetTimeStepEstimate();
-
+      if (ti == 50000){itime = dt;}
       // S is the vector of dofs, t is the current time, and dt is the time step
       // to advance.
       ode_solver->Step(S, t, dt);
+
+      if(param.mat.plastic)
+      {
+         Returnmapping (s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle, dilation_angle, plastic_viscosity, dt_old);
+         n_p_gf  = ini_p_gf;
+         n_p_gf -= p_gf;
+         n_p_gf.Neg();
+      }
+
+      if(param.control.winkler_foundation & param.control.winkler_flat) {for( int i = 0; i < x_gf.Size(); i++ ){if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}}}
+
+      if (param.tmop.tmop)
+      {
+         if((ti % param.tmop.remesh_steps) == 0 || (dt / itime) < param.tmop.time_reduction)
+         {
+            if(myid == 0)
+            {
+               if ((ti % param.tmop.remesh_steps) == 0){cout << "*** calling remeshing due to constant remeshing step " << param.tmop.remesh_steps << endl;}
+               else if ((dt / itime) < param.tmop.time_reduction){cout << "*** calling remeshing due to time reduction of " << param.tmop.time_reduction << endl;}
+            }
+
+            ParGridFunction x_mod_gf(&H1FESpace); 
+
+            // Store source mesh positions.
+            ParMesh *pmesh_copy =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old  =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old1 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old2 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old3 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old4 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old5 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old6 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old7 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old8 =  new ParMesh(*pmesh);
+            ParMesh *pmesh_old9 =  new ParMesh(*pmesh);
+
+            x_old_gf = *pmesh->GetNodes();
+            x_mod_gf = *pmesh->GetNodes();
+            
+            // if(param.control.winkler_foundation & param.control.winkler_flat)
+            // {
+            //    if(myid == 0)
+            //    {
+            //       cout << "*** flattening " << endl;
+            //    }
+
+            //    for( int i = 0; i < x_gf.Size(); i++ )
+            //    {
+            //       if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}
+            //       // if(flattening[i] > 0.0){x_old_gf[i] = x_ini_gf[i];}
+            //    }
+            // }
+
+            ti = ti-1;
+
+            if (param.sim.visit)
+            {
+                  visit_dc.SetCycle(ti);
+                  visit_dc.SetTime(t*0.995);
+                  visit_dc.Save();
+            }
+
+            if (param.sim.paraview)
+            {
+                  pd->SetCycle(ti);
+                  pd->SetTime(t*0.995);
+                  pd->Save();
+            }
+
+            ti = ti+1;
+
+            HR_adaptivity(pmesh_copy, x_mod_gf, ess_tdofs, myid, param.tmop.mesh_poly_deg, param.mesh.rs_levels, param.mesh.rp_levels, param.tmop.jitter, param.tmop.metric_id, param.tmop.target_id,\
+                           param.tmop.lim_const, param.tmop.adapt_lim_const, param.tmop.quad_type, param.tmop.quad_order, param.tmop.solver_type, param.tmop.solver_iter, param.tmop.solver_rtol, \
+                           param.tmop.solver_art_type, param.tmop.lin_solver, param.tmop.max_lin_iter, param.tmop.move_bnd, param.tmop.combomet, param.tmop.bal_expl_combo, param.tmop.hradaptivity, \
+                           param.tmop.h_metric_id, param.tmop.normalization, param.tmop.verbosity_level, param.tmop.fdscheme, param.tmop.adapt_eval, param.tmop.exactaction, param.solver.p_assembly, \
+                           param.tmop.n_hr_iter, param.tmop.n_h_iter, param.tmop.mesh_node_ordering, param.tmop.barrier_type, param.tmop.worst_case_type);
+
+            mesh_changed = true;
+
+            x_gf = x_mod_gf; x_gf *= param.tmop.ale;
+            x_gf.Add(1.0 - param.tmop.ale, x_old_gf);
+
+            // L2 target xyz after remeshing
+            xyz_gf_l2.ProjectCoefficient(xyz_coeff);
+            pmesh_copy->NewNodes(x_gf, false); // Deformined mesh for H1 interpolation 
+
+            {
+               ParGridFunction U(&H1FESpace); 
+               U =0.0; U = x_old_gf;
+               // x_gf += 0.01e3; // test for translation
+               ParGridFunction S1(&L2FESpace); ParGridFunction S2(&L2FESpace); ParGridFunction S3(&L2FESpace);
+               ParGridFunction S4(&L2FESpace); ParGridFunction S5(&L2FESpace); ParGridFunction S6(&L2FESpace);
+               S1 =0.0; S2 =0.0; S3 =0.0; 
+               S4 =0.0; S5 =0.0; S6 =0.0;
+
+               if(dim == 2){for(int i = 0; i < S1.Size(); i++ ){S1[i] = s_gf[i+S1.Size()*0];S2[i] = s_gf[i+S1.Size()*1];S3[i] = s_gf[i+S1.Size()*2];} }
+               else{for(int i = 0; i < S1.Size(); i++ ){S1[i] = s_gf[i+S1.Size()*0];S2[i] = s_gf[i+S1.Size()*1];S3[i] = s_gf[i+S1.Size()*2]; S4[i] = s_gf[i+S1.Size()*3];S5[i] = s_gf[i+S1.Size()*4];S6[i] = s_gf[i+S1.Size()*5];}}
+               
+               if(myid==0){std::cout << "remapping for L2" << std::endl;}
+               Remapping(pmesh_old1, U, x_gf, e_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+               Remapping(pmesh_old2, U, x_gf, p_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+               Remapping(pmesh_old3, U, x_gf, ini_p_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+               
+               if(dim ==2)
+               {
+                  Remapping(pmesh_old4, U, x_gf, S1, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf; 
+                  Remapping(pmesh_old5, U, x_gf, S2, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf; 
+                  Remapping(pmesh_old6, U, x_gf, S3, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf; 
+               }
+               else
+               {
+                  Remapping(pmesh_old4, U, x_gf, S1, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+                  Remapping(pmesh_old5, U, x_gf, S2, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+                  Remapping(pmesh_old6, U, x_gf, S3, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+                  Remapping(pmesh_old7, U, x_gf, S4, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+                  Remapping(pmesh_old8, U, x_gf, S5, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+                  Remapping(pmesh_old9, U, x_gf, S6, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+               }
+
+               if(dim == 2){for(int i = 0; i < S1.Size(); i++ ){s_gf[i+S1.Size()*0]=S1[i]; s_gf[i+S1.Size()*1]=S2[i];s_gf[i+S1.Size()*2]=S3[i];} }
+               else{for(int i = 0; i < S1.Size(); i++ ){s_gf[i+S1.Size()*0]=S1[i];s_gf[i+S1.Size()*1]=S2[i];s_gf[i+S1.Size()*2]=S3[i];s_gf[i+S1.Size()*3]=S4[i];s_gf[i+S1.Size()*4]=S5[i];s_gf[i+S1.Size()*5]=S6[i];}}
+
+               if(myid==0){std::cout << "remapping for H1" << std::endl;}
+
+               int NE_opt = pmesh_copy->GetNE(), 
+                   nsp1 = L2FESpace.GetFE(0)->GetNodes().GetNPoints(), 
+                   nsp2 = L2FESpace_stress.GetFE(0)->GetNodes().GetNPoints(), 
+                   tar_ncomp = v_gf.VectorDim();
+               // H1 space
+               // Generate list of points where the grid function will be evaluated.
+               Vector vxyz;
+               int point_ordering;
+               vxyz = *pmesh_copy->GetNodes(); // from target mesh
+               point_ordering = pmesh_copy->GetNodes()->FESpace()->GetOrdering();
+               int nodes_cnt = vxyz.Size() / dim;
+
+               // Find and Interpolate FE function values on the desired points.
+               Vector interp_vals(nodes_cnt*tar_ncomp);
+               FindPointsGSLIB finder;
+               // FindPointsGSLIB finder(MPI_COMM_WORLD);
+               finder.Setup(*pmesh_old);
+               finder.Interpolate(vxyz, v_gf, interp_vals, point_ordering);
+               v_gf = interp_vals;
+
+               finder.Interpolate(vxyz, u_gf, interp_vals, point_ordering);
+               u_gf = interp_vals;
+
+               // for (int i = 0; i < vxyz.Size()/2; i++)
+               // {
+               //    std::cout << "H1 : " << i << "/" << vxyz.Size()/2 << "= (" << vxyz[i] << "," << vxyz[i+vxyz.Size()/2] << ")" << std::endl;
+               // }
+
+               // L2 space 
+               // finder.SetL2AvgType(FindPointsGSLIB::ARITHMETIC);
+               
+               // vxyz.SetSize(nsp1*NE*dim);
+               // vxyz =0.0;
+               // for (int i = 0; i < NE; i++)
+               // {
+               //    const FiniteElement *fe = L2FESpace.GetFE(i);
+               //    const IntegrationRule ir = fe->GetNodes();
+               //    ElementTransformation *et = L2FESpace.GetElementTransformation(i);
+
+               //    DenseMatrix pos;
+               //    et->Transform(ir, pos);
+               //    Vector rowx(vxyz.GetData() + i*nsp1, nsp1),
+               //          rowy(vxyz.GetData() + i*nsp1 + NE*nsp1, nsp1),
+               //          rowz;
+               //    if (dim == 3)
+               //    {
+               //       rowz.SetDataAndSize(vxyz.GetData() + i*nsp1 + 2*NE*nsp1, nsp1);
+               //    }
+               //    pos.GetRow(0, rowx);
+               //    pos.GetRow(1, rowy);
+               //    if (dim == 3) { pos.GetRow(2, rowz); }
+               // }
+
+               // // 
+               // for (int i = 0; i < vxyz.Size()/2; i++)
+               // {
+               //    std::cout << "L2 : " << i << "/" << vxyz.Size()/2 << "= (" << vxyz[i] << "," << vxyz[i+vxyz.Size()/2] << ")" << std::endl;
+               // }
+
+               // point_ordering = Ordering::byNODES;
+               // // nodes_cnt = vxyz.Size() / dim;
+               // tar_ncomp = e_gf.VectorDim();
+
+               // // Find and Interpolate FE function values on the desired points.
+               // // interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;/
+               // interp_vals.SetSize(e_gf.Size()); interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, e_gf, interp_vals, point_ordering);
+               // e_gf = interp_vals; interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, p_gf, interp_vals, point_ordering);
+               // p_gf = interp_vals; interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, n_p_gf, interp_vals, point_ordering);
+               // n_p_gf = interp_vals; interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, ini_p_gf, interp_vals, point_ordering);
+               // ini_p_gf = interp_vals; interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, rho0_gf, interp_vals, point_ordering);
+               // rho0_gf = interp_vals; interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, lambda0_gf, interp_vals, point_ordering);
+               // lambda0_gf = interp_vals; interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, mu0_gf, interp_vals, point_ordering);
+               // mu0_gf = interp_vals; interp_vals = 0.0;
+
+               // finder.Interpolate(xyz_gf_l2, mat_gf, interp_vals, point_ordering);
+               // mat_gf = interp_vals; interp_vals = 0.0;
+
+               // // L2 space of stress
+               // interp_vals.SetSize(s_gf.Size()); interp_vals = 0.0;
+               // finder.Interpolate(xyz_gf_l2, s_gf, interp_vals, point_ordering);
+               // s_gf = interp_vals;
+
+               // // // L2 space of stress
+               // vxyz.SetSize(nsp2*NE*dim);
+               // vxyz =0.0;
+               // for (int i = 0; i < NE; i++)
+               // {
+               //    const FiniteElement *fe = L2FESpace.GetFE(i);
+               //    const IntegrationRule ir = fe->GetNodes();
+               //    ElementTransformation *et = L2FESpace.GetElementTransformation(i);
+
+               //    DenseMatrix pos;
+               //    et->Transform(ir, pos);
+               //    Vector rowx(vxyz.GetData() + i*nsp2, nsp2),
+               //          rowy(vxyz.GetData() + i*nsp2 + NE*nsp2, nsp2),
+               //          rowz;
+               //    if (dim == 3)
+               //    {
+               //       rowz.SetDataAndSize(vxyz.GetData() + i*nsp2 + 2*NE*nsp2, nsp2);
+               //    }
+               //    pos.GetRow(0, rowx);
+               //    pos.GetRow(1, rowy);
+               //    if (dim == 3) { pos.GetRow(2, rowz); }
+               // }
+               // point_ordering = Ordering::byNODES;
+               // nodes_cnt = vxyz.Size() / dim;
+               // tar_ncomp = s_gf.VectorDim();
+
+               // // Find and Interpolate FE function values on the desired points.
+               // interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;
+
+               // std::cout << xyz_gf_l2.Size() <<","<<vxyz.Size() << std::endl;
+               // std::cout << s_gf.Size() <<","<<nodes_cnt*tar_ncomp << std::endl;
+               // finder.Interpolate(vxyz, s_gf, interp_vals, point_ordering);
+               // s_gf = interp_vals;
+               
+            }
+            delete pmesh_old; 
+            delete pmesh_old1; 
+            delete pmesh_old2;
+            delete pmesh_old3; 
+            delete pmesh_old4; 
+            delete pmesh_old5; 
+            delete pmesh_old6;
+            delete pmesh_old7; 
+            delete pmesh_old8; 
+            delete pmesh_old9; 
+            delete pmesh_copy;
+            
+            // if(dim ==2) {delete S1; delete S2; delete S3;}
+            // else {delete S1; delete S2; delete S3; delete S4; delete S5; delete S6;}
+
+            // if (mesh_changed & pmesh->Nonconforming())
+            // {
+            //    // update state and operator
+            //    TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+            //    pmesh->Rebalance();
+            //    TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+            // }
+
+            if (mesh_changed & param.tmop.amr)
+            {
+               // update state and operator
+               TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+               geo.TMOPUpdate(S, true);
+               pmesh->Rebalance();
+               TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+               geo.TMOPUpdate(S, false);
+               ode_solver->Init(geo);
+            }
+
+            // if (param.sim.visit)
+            // {
+            //       visit_dc.SetCycle(ti);
+            //       visit_dc.SetTime(t+t*1e-4);
+            //       visit_dc.Save();
+            // }
+
+            // if (param.sim.paraview)
+            // {
+            //       pd->SetCycle(ti);
+            //       pd->SetTime(t+t*1e-4);
+            //       pd->Save();
+            // }
+
+            // ti = ti+1;
+
+          }
+      }
+
       steps++;
       dt_old = dt;
 
       // Adaptive time step control.
-      const double dt_est = geo.GetTimeStepEstimate(S, dt);
+      // const double dt_est = geo.GetTimeStepEstimate(S, dt);
+      double dt_est = geo.GetTimeStepEstimate(S, dt);
+      h_min = geo.GetLengthEstimate(S, dt);
+
+      // if(mesh_changed){mesh_changed=false; dt_est=dt_est*1e-5;}
+
       // const double dt_est = geo.GetTimeStepEstimate(S, dt, mpi.Root());
       // const double dt_est = geo.GetTimeStepEstimate(S);
-      if (dt_est < dt)
+
+      // if (dt < std::numeric_limits<double>::epsilon())
+      // { 
+      //    if (param.sim.visit)
+      //    {
+      //          visit_dc.SetCycle(ti);
+      //          visit_dc.SetTime(t);
+      //          visit_dc.Save();
+      //    }
+
+      //    if (param.sim.paraview)
+      //    {
+      //          pd->SetCycle(ti);
+      //          pd->SetTime(t);
+      //          pd->Save();
+      //    }
+
+      //    MFEM_ABORT("The time step crashed!"); 
+      // }
+
+      if(mesh_changed)
       {
+      mesh_changed = false;
+      }
+      else
+      {
+         if (dt_est < dt)
+         {
          // Repeat (solve again) with a decreased time step - decrease of the
          // time estimate suggests appearance of oscillations.
-         dt *= 0.85;
-         if (dt < std::numeric_limits<double>::epsilon())
-         { MFEM_ABORT("The time step crashed!"); }
-         t = t_old;
-         S = S_old;
-         geo.ResetQuadratureData();
-         // if (mpi.Root()) { cout << "Repeating step " << ti << endl; }
-         if (steps < param.sim.max_tsteps) { last_step = false; }
-         ti--; continue;
+         dt *= 0.50;
+         // if (dt < std::numeric_limits<double>::epsilon())
+         if (dt < 1.0E-38)
+         { 
+            if (param.sim.visit)
+            {
+                  visit_dc.SetCycle(ti);
+                  visit_dc.SetTime(t);
+                  visit_dc.Save();
+            }
+
+            if (param.sim.paraview)
+            {
+                  pd->SetCycle(ti);
+                  pd->SetTime(t);
+                  pd->Save();
+            }
+
+            MFEM_ABORT("The time step crashed!"); 
+         }
+            t = t_old;
+            S = S_old;
+            p_gf = p_gf_old; ini_p_gf = ini_p_old_gf;
+            geo.ResetQuadratureData();
+            // if (mpi.Root()) { cout << "Repeating step " << ti << ", dt " << dt/86400/365.25 << std::setprecision(6) << std::scientific << " yr" << endl; }
+            if (steps < param.sim.max_tsteps) { last_step = false; }
+            ti--; continue;
+         }
+         else if (dt_est > 1.25 * dt) { dt *= 1.02; }
       }
-      else if (dt_est > 1.25 * dt) { dt *= 1.02; }
 
       // Ensure the sub-vectors x_gf, v_gf, and e_gf know the location of the
       // data in S. This operation simply updates the Memory validity flags of
       // the sub-vectors to match those of S.
+
+      // // Estimate element errors using the Zienkiewicz-Zhu error estimator.
+      // if(param.tmop.amr)
+      // {
+      //    if (myid == 0) { std::cout << "Estimating Error ... " << flush; }
+      //    Vector errors(pmesh->GetNE());
+      //    // geo.GetErrorEstimates(e_gf, errors);
+      //    if (myid == 0) { std::cout << "done." << std::endl; }
+
+      //    double local_max_err = errors.Max();
+      //    double global_max_err;
+      //    MPI_Allreduce(&local_max_err, &global_max_err, 1,MPI_DOUBLE, MPI_MAX, pmesh.GetComm());
+
+      //    // Refine the elements whose error is larger than a fraction of the
+      //    // maximum element error.
+      //    const double frac = 0.7;
+      //    double threshold = frac * global_max_err;
+      //    if (Mpi::Root()) { cout << "Refining ..." << endl; }
+      //    pmesh->RefineByError(errors, threshold);
+
+      //    // update state and operator
+      //    TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+      //    geo.TMOPUpdate(S, true);
+      //    pmesh->Rebalance();
+      //    TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+      //    geo.TMOPUpdate(S, false);
+      //    ode_solver->Init(geo);
+      // }
+      
+      // // Surface diffusion
+      // {
+      //    for( int i = 0; i < topo.Size(); i++ ){topo[i] = x_top[i+topo.Size()];}
+      //    ConstantCoefficient diffusivity(1e-6);
+      //    ParLinearForm b_top(&sub_fespace1);
+      //    b_top.AddDomainIntegrator(new DomainLFIntegrator(diffusivity));
+      //    b_top.Assemble();
+      //    ParBilinearForm a_top(&sub_fespace1);
+      //    a_top.AddDomainIntegrator(new DiffusionIntegrator);
+      //    a_top.Assemble();
+      //    HypreParMatrix A_top;
+      //    Vector B_top, X_top;
+      //    a_top.FormLinearSystem(boundary_dofs, topo, b_top, A_top, X_top, B_top);
+      //    CGSolver cg(MPI_COMM_WORLD);
+      //    HypreSmoother prec;
+      //    prec.SetType(HypreSmoother::Chebyshev);  // Chebyshev
+      //    cg.SetPreconditioner(prec);
+      //    cg.SetOperator(A_top);
+      //    cg.SetRelTol(1e-12);
+      //    cg.SetAbsTol(0.0);
+      //    cg.SetMaxIter(2000);
+      //    cg.SetPrintLevel(-1);
+      //    cg.Mult(B_top, X_top);
+      //    a_top.RecoverFEMSolution(X_top, b_top, topo);
+      //    for( int i = 0; i < topo.Size(); i++ ){x_top[i+topo.Size()] = x_top[i+topo.Size()] + (x_top[i+topo.Size()]-topo[i])*dt;}
+      //    ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
+      // }
+      
       x_gf.SyncAliasMemory(S);
       v_gf.SyncAliasMemory(S);
       e_gf.SyncAliasMemory(S);
       s_gf.SyncAliasMemory(S);
       x_ini_gf.SyncAliasMemory(S);
 
-      if(param.mat.plastic)
-      {
-         Returnmapping (s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle, dilation_angle, plastic_viscosity, dt_old);
-         s_gf.SyncAliasMemory(S);
-         n_p_gf  = ini_p_gf;
-         n_p_gf -= p_gf;
-         n_p_gf.Neg();
-      }
       s_old_gf = s_gf; // storing old Caushy stress
 
       // Adding stress increment to total stress and storing spin rate
@@ -1218,181 +2151,6 @@ int main(int argc, char *argv[])
       pmesh->NewNodes(x_gf, false);
       u_gf.Add(dt, v_gf);
 
-      if (param.tmop.tmop)
-      {
-         mesh_changed = false;
-         if(last_step || (ti % param.tmop.remesh_steps) == 0)
-         {
-            if(param.control.winkler_foundation & param.control.winkler_flat)
-            {
-               for( int i = 0; i < x_gf.Size(); i++ )
-               {
-                  if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}
-               }
-            }
-
-            // Store source mesh positions.
-            ParMesh *pmesh_old =  new ParMesh(*pmesh);
- 
-            HR_adaptivity(pmesh, x_gf, ess_tdofs, myid, param.tmop.mesh_poly_deg, param.mesh.rs_levels, param.mesh.rp_levels, param.tmop.jitter, param.tmop.metric_id, param.tmop.target_id,\
-                           param.tmop.lim_const, param.tmop.adapt_lim_const, param.tmop.quad_type, param.tmop.quad_order, param.tmop.solver_type, param.tmop.solver_iter, param.tmop.solver_rtol, \
-                           param.tmop.solver_art_type, param.tmop.lin_solver, param.tmop.max_lin_iter, param.tmop.move_bnd, param.tmop.combomet, param.tmop.bal_expl_combo, param.tmop.hradaptivity, \
-                           param.tmop.h_metric_id, param.tmop.normalization, param.tmop.verbosity_level, param.tmop.fdscheme, param.tmop.adapt_eval, param.tmop.exactaction, param.solver.p_assembly, \
-                           param.tmop.n_hr_iter, param.tmop.n_h_iter, param.tmop.mesh_node_ordering, param.tmop.barrier_type, param.tmop.worst_case_type);
-
-            mesh_changed = true;
-
-            // Optimized mesh
-            pmesh->NewNodes(x_gf, false);
-
-            {
-               int NE_opt = pmesh->GetNE(), 
-                   nsp1 = L2FESpace.GetFE(0)->GetNodes().GetNPoints(), 
-                   nsp2 = L2FESpace_stress.GetFE(0)->GetNodes().GetNPoints(), 
-                   tar_ncomp = v_gf.VectorDim();
-               // H1 space
-               // Generate list of points where the grid function will be evaluated.
-               Vector vxyz;
-               int point_ordering;
-               vxyz = *pmesh->GetNodes(); // from target mesh
-               point_ordering = pmesh->GetNodes()->FESpace()->GetOrdering();
-               int nodes_cnt = vxyz.Size() / dim;
-
-               // Find and Interpolate FE function values on the desired points.
-               Vector interp_vals(nodes_cnt*tar_ncomp);
-               FindPointsGSLIB finder;
-               // FindPointsGSLIB finder(MPI_COMM_WORLD);
-               finder.Setup(*pmesh_old);
-               // finder.Setup(*pmesh); // setup using source mesh
-               finder.Interpolate(vxyz, v_gf, interp_vals, point_ordering);
-               v_gf = interp_vals;
-
-               finder.Interpolate(vxyz, u_gf, interp_vals, point_ordering);
-               u_gf = interp_vals;
-
-               // L2 space
-               vxyz.SetSize(nsp1*NE*dim);
-               vxyz =0.0;
-               for (int i = 0; i < NE; i++)
-               {
-                  const FiniteElement *fe = L2FESpace.GetFE(i);
-                  const IntegrationRule ir = fe->GetNodes();
-                  ElementTransformation *et = L2FESpace.GetElementTransformation(i);
-
-                  DenseMatrix pos;
-                  et->Transform(ir, pos);
-                  Vector rowx(vxyz.GetData() + i*nsp1, nsp1),
-                        rowy(vxyz.GetData() + i*nsp1 + NE*nsp1, nsp1),
-                        rowz;
-                  if (dim == 3)
-                  {
-                     rowz.SetDataAndSize(vxyz.GetData() + i*nsp1 + 2*NE*nsp1, nsp1);
-                  }
-                  pos.GetRow(0, rowx);
-                  pos.GetRow(1, rowy);
-                  if (dim == 3) { pos.GetRow(2, rowz); }
-               }
-               point_ordering = Ordering::byNODES;
-               nodes_cnt = vxyz.Size() / dim;
-               tar_ncomp = e_gf.VectorDim();
-
-               // Find and Interpolate FE function values on the desired points.
-               interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;
-               // FindPointsGSLIB finder;
-               // FindPointsGSLIB finder(MPI_COMM_WORLD);
-               // finder.Setup(*pmesh_old);
-
-               // 
-               finder.Interpolate(vxyz, e_gf, interp_vals, point_ordering);
-               e_gf = interp_vals;
-
-               finder.Interpolate(vxyz, p_gf, interp_vals, point_ordering);
-               p_gf = interp_vals;
-
-               finder.Interpolate(vxyz, n_p_gf, interp_vals, point_ordering);
-               n_p_gf = interp_vals;
-
-               finder.Interpolate(vxyz, ini_p_gf, interp_vals, point_ordering);
-               ini_p_gf = interp_vals;
-
-               finder.Interpolate(vxyz, rho0_gf, interp_vals, point_ordering);
-               rho0_gf = interp_vals;
-
-               finder.Interpolate(vxyz, lambda0_gf, interp_vals, point_ordering);
-               lambda0_gf = interp_vals;
-
-               finder.Interpolate(vxyz, mu0_gf, interp_vals, point_ordering);
-               mu0_gf = interp_vals;
-
-               finder.Interpolate(vxyz, mat_gf, interp_vals, point_ordering);
-               mat_gf = interp_vals;
-
-               // L2 space of stress
-               vxyz.SetSize(nsp2*NE*dim);
-               vxyz =0.0;
-               for (int i = 0; i < NE; i++)
-               {
-                  const FiniteElement *fe = L2FESpace.GetFE(i);
-                  const IntegrationRule ir = fe->GetNodes();
-                  ElementTransformation *et = L2FESpace.GetElementTransformation(i);
-
-                  DenseMatrix pos;
-                  et->Transform(ir, pos);
-                  Vector rowx(vxyz.GetData() + i*nsp2, nsp2),
-                        rowy(vxyz.GetData() + i*nsp2 + NE*nsp2, nsp2),
-                        rowz;
-                  if (dim == 3)
-                  {
-                     rowz.SetDataAndSize(vxyz.GetData() + i*nsp2 + 2*NE*nsp2, nsp2);
-                  }
-                  pos.GetRow(0, rowx);
-                  pos.GetRow(1, rowy);
-                  if (dim == 3) { pos.GetRow(2, rowz); }
-               }
-               point_ordering = Ordering::byNODES;
-               nodes_cnt = vxyz.Size() / dim;
-               tar_ncomp = s_gf.VectorDim();
-
-               // Find and Interpolate FE function values on the desired points.
-               interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;
-               // FindPointsGSLIB finder;
-               // FindPointsGSLIB finder(MPI_COMM_WORLD);
-               // finder.Setup(*pmesh_old);
-
-               // 
-               finder.Interpolate(vxyz, s_gf, interp_vals, point_ordering);
-               s_gf = interp_vals;
-
-            }
-
-            delete pmesh_old;
-
-          x_gf.SyncAliasMemory(S);
-          v_gf.SyncAliasMemory(S);
-          e_gf.SyncAliasMemory(S);
-          s_gf.SyncAliasMemory(S);
-          x_ini_gf.SyncAliasMemory(S);
-         }
-
-
-         if (mesh_changed & param.tmop.amr)
-         {
-            // update state and operator
-            TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
-            geo.TMOPUpdate(S, true);
-            pmesh->Rebalance();
-            TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
-            geo.TMOPUpdate(S, false);
-            // // Ensure the sub-vectors x_gf, v_gf, and e_gf know the location of the
-            x_gf.SyncAliasMemory(S);
-            v_gf.SyncAliasMemory(S);
-            e_gf.SyncAliasMemory(S);
-            s_gf.SyncAliasMemory(S);
-            x_ini_gf.SyncAliasMemory(S);
-            ode_solver->Init(geo);
-         }
-      }
-      
       if (last_step || (ti % param.sim.vis_steps) == 0)
       {
          double lnorm = e_gf * e_gf, norm;
@@ -1405,6 +2163,13 @@ int main(int argc, char *argv[])
          }
          const double internal_energy = geo.InternalEnergy(e_gf);
          const double kinetic_energy = geo.KineticEnergy(v_gf);
+         double local_max_vel = std::max(fabs(v_gf.Min()), v_gf.Max())*86400*365*100;
+         double global_max_vel;
+
+         MPI_Reduce(&local_max_vel, &global_max_vel, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+         // std::cout << myid << ", local_max_vel (cm/yr) = " << local_max_vel  << std::endl;
+
          if(param.sim.year)
          {
             if (mpi.Root())
@@ -1414,9 +2179,13 @@ int main(int argc, char *argv[])
             cout << std::fixed;
             cout << "step " << std::setw(5) << ti
                  << ",\tt = " << std::setw(5) << std::setprecision(4) << t/86400/365.25
-                 << ",\tdt = " << std::setw(5) << std::setprecision(6) << std::scientific << dt/86400/365.25
-                 << ",\t|e| = " << std::setprecision(10) << std::scientific
-                 << sqrt_norm;
+                 << ",\tdt (yr) = " << std::setw(5) << std::setprecision(6) << std::scientific << dt/86400/365.25
+                 << ",\t|e| = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << sqrt_norm
+                 << ", max_vel (cm/yr) = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << global_max_vel
+                 << ", h_min (m) = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << h_min;
             //  << ",\t|IE| = " << std::setprecision(10) << std::scientific
             //  << internal_energy
             //   << ",\t|KE| = " << std::setprecision(10) << std::scientific
@@ -1462,7 +2231,8 @@ int main(int argc, char *argv[])
          // another set of GLVis connections (one from each rank):
          MPI_Barrier(pmesh->GetComm());
 
-         if (param.sim.visualization || param.sim.visit || param.sim.gfprint || param.sim.paraview) { geo.ComputeDensity(rho_gf); }
+         // if (param.sim.visualization || param.sim.visit || param.sim.gfprint || param.sim.paraview) { geo.ComputeDensity(rho_gf); }
+         if (param.control.mass_bal) { geo.ComputeDensity(rho_gf); }
          if (param.sim.visualization)
          {
             int Wx = 0, Wy = 0; // window position

@@ -41,8 +41,8 @@ namespace mfem
       double ten_cut = {0.0};
       int mat{0};
       int nsize{mat_gf.Size()};
-      // bool viscoplastic = true;
-      bool viscoplastic = false;
+      bool viscoplastic = true;
+      // bool viscoplastic = false;
 
       for( int i = 0; i < nsize; i++ )
       {  
@@ -133,7 +133,9 @@ namespace mfem
             if(tension_cutoff[mat] == 0)
             {
                ten_cut = coh_str/tan(DEG2RAD*friction_angle[mat]);
+               // std::cout << "tension cutoff " << ten_cut << std::endl;
             }
+            else{ten_cut = tension_cutoff[mat];}
 
             // shear failure function
             fs = sig1 - N_phi*sig3 + 2*coh_str*st_N_phi;
@@ -185,7 +187,10 @@ namespace mfem
                   depls = std::fabs(beta) * std::sqrt(7. / 18);
                   // depls = std::fabs(alam) * std::sqrt(7. / 18);
                }
-               
+
+               // std::cout << i << ", tensile failure occures,  ft = " << ft << ", plastic_str(0,0) = " << plastic_str(0,0) << ", plastic_str(1,1) = " << \
+               // plastic_str(1,1) << "plastic_str(2,2) = " << plastic_str(2,2) << ", depls = " << depls << std::endl;
+                  
             }
 
             // Rotating Principal axis to XYZ axis

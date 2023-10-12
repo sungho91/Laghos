@@ -513,22 +513,22 @@ namespace mfem
          if (myid == 0) { cout << "Unknown quad_type: " << quad_type << endl; irules = &IntRulesLo; break;}
    }
    tmop_integ->SetIntegrationRules(*irules, quad_order);
-   if (myid == 0 && dim == 2)
-   {
-      cout << "Triangle quadrature points: "
-           << irules->Get(Geometry::TRIANGLE, quad_order).GetNPoints()
-           << "\nQuadrilateral quadrature points: "
-           << irules->Get(Geometry::SQUARE, quad_order).GetNPoints() << endl;
-   }
-   if (myid == 0 && dim == 3)
-   {
-      cout << "Tetrahedron quadrature points: "
-           << irules->Get(Geometry::TETRAHEDRON, quad_order).GetNPoints()
-           << "\nHexahedron quadrature points: "
-           << irules->Get(Geometry::CUBE, quad_order).GetNPoints()
-           << "\nPrism quadrature points: "
-           << irules->Get(Geometry::PRISM, quad_order).GetNPoints() << endl;
-   }
+   // if (myid == 0 && dim == 2)
+   // {
+   //    cout << "Triangle quadrature points: "
+   //         << irules->Get(Geometry::TRIANGLE, quad_order).GetNPoints()
+   //         << "\nQuadrilateral quadrature points: "
+   //         << irules->Get(Geometry::SQUARE, quad_order).GetNPoints() << endl;
+   // }
+   // if (myid == 0 && dim == 3)
+   // {
+   //    cout << "Tetrahedron quadrature points: "
+   //         << irules->Get(Geometry::TETRAHEDRON, quad_order).GetNPoints()
+   //         << "\nHexahedron quadrature points: "
+   //         << irules->Get(Geometry::CUBE, quad_order).GetNPoints()
+   //         << "\nPrism quadrature points: "
+   //         << irules->Get(Geometry::PRISM, quad_order).GetNPoints() << endl;
+   // }
 
    // Limit the node movement.
    // The limiting distances can be given by a general function of space.
@@ -647,8 +647,8 @@ namespace mfem
    double minJ0;
    MPI_Allreduce(&min_detJ, &minJ0, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
    min_detJ = minJ0;
-   if (myid == 0)
-   { cout << "Minimum det(J) of the original mesh is " << min_detJ << endl; }
+   // if (myid == 0)
+   // { cout << "Minimum det(J) of the original mesh is " << min_detJ << endl; }
 
    if (min_detJ < 0.0 && barrier_type == 0
        && metric_id != 22 && metric_id != 211 && metric_id != 252
@@ -712,12 +712,14 @@ namespace mfem
       {
          const int nd = pfespace->GetBE(i)->GetDof();
          const int attr = pmesh->GetBdrElement(i)->GetAttribute();
-         MFEM_VERIFY(!(dim == 2 && attr == 3),
-                     "Boundary attribute 3 must be used only for 3D meshes. "
-                     "Adjust the attributes (1/2/3/4 for fixed x/y/z/all "
-                     "components, rest for free nodes), or use -fix-bnd.");
-         if (attr == 1 || attr == 2 || attr == 3 || attr == 4) { n += nd; }
-         // if (attr == 4) { n += nd * dim; }
+         // MFEM_VERIFY(!(dim == 2 && attr == 3),
+         //             "Boundary attribute 3 must be used only for 3D meshes. "
+         //             "Adjust the attributes (1/2/3/4 for fixed x/y/z/all "
+         //             "components, rest for free nodes), or use -fix-bnd.");
+         // if (attr == 1 || attr == 2) { n += 2*nd; }
+         // if (attr == 3 || attr == 4) { n += 1*nd; }
+         if (attr == 1 || attr == 2 || attr == 3) { n += nd; }
+         if (attr == 4) { n += nd * dim; }
       }
       Array<int> ess_vdofs(n);
       n = 0;
@@ -729,34 +731,37 @@ namespace mfem
          if (attr == 1) // Fix x components.
          {
             for (int j = 0; j < nd; j++)
-            { ess_vdofs[n++] = vdofs[j]; }
+            { ess_vdofs[n++] = vdofs[j];}
          }
          else if (attr == 2) // Fix x components.
          {
             for (int j = 0; j < nd; j++)
-            { ess_vdofs[n++] = vdofs[j]; }
+            { ess_vdofs[n++] = vdofs[j];}
          }
          else if (attr == 3) // Fix y components.
          {
             for (int j = 0; j < nd; j++)
             { ess_vdofs[n++] = vdofs[j+nd]; }
          }
-         else if (attr == 4) // Fix y components.
-         {
-            for (int j = 0; j < nd; j++)
-            { ess_vdofs[n++] = vdofs[j+nd]; }
-         }
+         // else if (attr == 4) // Fix y components.
+         // {
+         //    for (int j = 0; j < nd; j++)
+         //    { ess_vdofs[n++] = vdofs[j+nd]; }
+         // }
          // else if (attr == 3) // Fix z components.
          // {
          //    for (int j = 0; j < nd; j++)
          //    { ess_vdofs[n++] = vdofs[j+2*nd]; }
          // }
-         // else if (attr == 4) // Fix all components.
-         // {
-         //    for (int j = 0; j < vdofs.Size(); j++)
-         //    { ess_vdofs[n++] = vdofs[j]; }
-         // }
+         else if (attr == 4) // Fix all components.
+         {
+            for (int j = 0; j < vdofs.Size(); j++)
+            { ess_vdofs[n++] = vdofs[j]; }
+         }
       }
+
+      a.SetEssentialVDofs(ess_vdofs);
+   }
 
       // Array<int> ess_tdofs;
       // {
@@ -766,12 +771,12 @@ namespace mfem
       //    {
       //       ess_bdr = 0; ess_bdr[0] = 1; ess_bdr[1] = 1;
       //       // pfespace->GetEssentialTrueDofs(ess_bdr, dofs_list,0);
-      //       x_gf.FESpace()->GetEssentialTrueDofs(ess_bdr, dofs_list,0);
+      //       pfespace->GetEssentialTrueDofs(ess_bdr, dofs_list);
       //       ess_tdofs.Append(dofs_list);
 
       //       ess_bdr = 0; ess_bdr[2] = 1; ess_bdr[3] = 1;
-      //       // pfespace->GetEssentialTrueDofs(ess_bdr, dofs_list,1);
-      //       x_gf.FESpace()->GetEssentialTrueDofs(ess_bdr, dofs_list,1);
+      //       // x_gf.FESpace()->GetEssentialTrueDofs(ess_bdr, dofs_list,1);
+      //       pfespace->GetEssentialTrueDofs(ess_bdr, dofs_list);
       //       ess_tdofs.Append(dofs_list);
       //    }
 
@@ -793,8 +798,6 @@ namespace mfem
       // }
 
       // a.SetEssentialVDofs(ess_tdofs);
-      a.SetEssentialVDofs(ess_vdofs);
-   }
 
    // As we use the inexact Newton method to solve the resulting nonlinear
    // system, here we setup the linear solver for the system's Jacobian.
@@ -922,12 +925,12 @@ namespace mfem
    if (myid == 0)
    {
       std::cout << std::scientific << std::setprecision(4);
-      cout << "Initial strain energy: " << init_energy
-           << " = metrics: " << init_metric_energy
-           << " + extra terms: " << init_energy - init_metric_energy << endl;
-      cout << "  Final strain energy: " << fin_energy
-           << " = metrics: " << fin_metric_energy
-           << " + extra terms: " << fin_energy - fin_metric_energy << endl;
+      // cout << "Initial strain energy: " << init_energy
+      //      << " = metrics: " << init_metric_energy
+      //      << " + extra terms: " << init_energy - init_metric_energy << endl;
+      // cout << "  Final strain energy: " << fin_energy
+      //      << " = metrics: " << fin_metric_energy
+      //      << " + extra terms: " << fin_energy - fin_metric_energy << endl;
       cout << "The strain energy decreased by: "
            << (init_energy - fin_energy) * 100.0 / init_energy << " %." << endl;
    }

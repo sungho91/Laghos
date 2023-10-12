@@ -251,7 +251,6 @@ void BodyForceIntegrator::AssembleRHSElementVect(const FiniteElement &fe,
          const int eq = e*nqp + q; // quardature point
          // grav0 = qdata.buoyJinvT(0)(eq, 0) + qdata.buoyJinvT(0)(eq, 1);
          grav1 = qdata.buoyJinvT(1)(eq, 1);
-         
          for (int i = 0; i < num; i++) // H1 dof (i.e. 9 for second order)
          {
             elvect[i+num*0] = elvect[i+num*0] + shape[i]*grav0; // in x direction

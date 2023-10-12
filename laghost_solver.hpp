@@ -61,54 +61,74 @@ private:
    const int dim, vdim, NQ, NE, Q1D;
    const bool use_viscosity, use_vorticity;
    const double cfl;
+   double max_vel_q;
+   double mscale_q; 
+   double gravity_q;
    TimingData *timer;
    const IntegrationRule &ir;
-   ParFiniteElementSpace &H1, &L2;
+   ParFiniteElementSpace &H1, &L2, &L2_stress;
    const Operator *H1R;
-   Vector q_dt_est, q_e, e_vec, q_dx, q_dv;
-   const QuadratureInterpolator *q1,*q2;
+   Vector q_dt_est, q_e, e_vec, q_dx, q_dv, q_sig;
+   Vector q_h_est;
+   const QuadratureInterpolator *q1,*q2,*q3;
    const ParGridFunction &gamma_gf;
+   const ParGridFunction &lambda_gf;
+   const ParGridFunction &mu_gf;
 public:
    QUpdate(const int d, const int ne, const int q1d,
            const bool visc, const bool vort,
            const double cfl, TimingData *t,
            const ParGridFunction &gamma_gf,
+           const ParGridFunction &lambda_gf,
+           const ParGridFunction &mu_gf,
            const IntegrationRule &ir,
-           ParFiniteElementSpace &h1, ParFiniteElementSpace &l2):
+           ParFiniteElementSpace &h1, ParFiniteElementSpace &l2, ParFiniteElementSpace &l2_stress):
       dim(d), vdim(h1.GetVDim()),
       NQ(ir.GetNPoints()), NE(ne), Q1D(q1d),
       use_viscosity(visc), use_vorticity(vort), cfl(cfl),
-      timer(t), ir(ir), H1(h1), L2(l2),
+      timer(t), ir(ir), H1(h1), L2(l2), L2_stress(l2_stress),
       H1R(H1.GetElementRestriction(ElementDofOrdering::LEXICOGRAPHIC)),
       q_dt_est(NE*NQ),
+      q_h_est(NE*NQ),
       q_e(NE*NQ),
+      q_sig(NE*NQ*3*(vdim-1)),
       e_vec(NQ*NE*vdim),
       q_dx(NQ*NE*vdim*vdim),
       q_dv(NQ*NE*vdim*vdim),
       q1(H1.GetQuadratureInterpolator(ir)),
       q2(L2.GetQuadratureInterpolator(ir)),
-      gamma_gf(gamma_gf) { }
+      q3(L2_stress.GetQuadratureInterpolator(ir)),
+      gamma_gf(gamma_gf),
+      lambda_gf(lambda_gf),
+      mu_gf(mu_gf) { }
    
    QUpdate(const int d, const int ne, const int q1d,
            const bool visc, const bool vort,
            const double dt,
            const double cfl, TimingData *t,
            const ParGridFunction &gamma_gf,
+           const ParGridFunction &lambda_gf,
+           const ParGridFunction &mu_gf,
            const IntegrationRule &ir,
-           ParFiniteElementSpace &h1, ParFiniteElementSpace &l2):
+           ParFiniteElementSpace &h1, ParFiniteElementSpace &l2, ParFiniteElementSpace &l2_stress):
       dim(d), vdim(h1.GetVDim()),
       NQ(ir.GetNPoints()), NE(ne), Q1D(q1d),
       use_viscosity(visc), use_vorticity(vort), cfl(cfl),
-      timer(t), ir(ir), H1(h1), L2(l2),
+      timer(t), ir(ir), H1(h1), L2(l2), L2_stress(l2_stress),
       H1R(H1.GetElementRestriction(ElementDofOrdering::LEXICOGRAPHIC)),
       q_dt_est(NE*NQ),
+      q_h_est(NE*NQ),
       q_e(NE*NQ),
+      q_sig(NE*NQ*3*(vdim-1)),
       e_vec(NQ*NE*vdim),
       q_dx(NQ*NE*vdim*vdim),
       q_dv(NQ*NE*vdim*vdim),
       q1(H1.GetQuadratureInterpolator(ir)),
       q2(L2.GetQuadratureInterpolator(ir)),
-      gamma_gf(gamma_gf) { }
+      q3(L2_stress.GetQuadratureInterpolator(ir)),
+      gamma_gf(gamma_gf),
+      lambda_gf(lambda_gf),
+      mu_gf(mu_gf) { }
 
    void UpdateQuadratureData(const Vector &S, QuadratureData &qdata);
    void UpdateQuadratureData(const Vector &S, QuadratureData &qdata, const double dt);
@@ -148,15 +168,16 @@ protected:
    const int dim, l2dofs_cnt, l2_stress_dofs_cnt, h1dofs_cnt, source_type;
    mutable int NE;
    const double cfl;
-   const bool use_viscosity, use_vorticity, p_assembly, winkler_foundation;
+   const bool use_viscosity, use_vorticity, p_assembly, winkler_foundation, dyn_damping;
    const double cg_rel_tol;
-   mutable double mass_scale, grav_mag, thickness, winkler_rho;
+   mutable double mass_scale, grav_mag, thickness, winkler_rho, dyn_factor;
    const int cg_max_iter;
    const double ftz_tol;
    ParGridFunction &gamma_gf;
    ParGridFunction &lambda_gf;
    ParGridFunction &mu_gf;
-   mutable Vector tension_cutoff, cohesion, friction_angle, dilation_angle;
+   Vector bc_id_pa;
+   // mutable Vector tension_cutoff, cohesion, friction_angle, dilation_angle;
    // Velocity mass matrix and local inverses of the energy mass matrices. These
    // are constant in time, due to the pointwise mass conservation property.
    mutable ParBilinearForm Mv;
@@ -206,7 +227,8 @@ protected:
       for (int v = 0; v < nvalues; v++)
       {
          p[v]  = rho[v] * e[v];
-         cs[v] = sqrt(pmod[v]/(rho[v]*mscale));
+         // cs[v] = sqrt(pmod[v]/(rho[v]*mscale));
+         cs[v] = sqrt(pmod[v]/(rho[v]));
          // cs[v] = sqrt(pmod[v]/rho[v]);
          // p[v]  = (gamma[v] - 1.0) * rho[v] * e[v];
          // cs[v] = sqrt(gamma[v] * (gamma[v]-1.0) * e[v]);
@@ -234,7 +256,7 @@ public:
                            const double cgt, const int cgiter, double ftz_tol,
                            const int order_q,
                            ParGridFunction &lambda_gf, ParGridFunction &mu_gf, double mscale, const double gravity, const double _thickness,
-                           Vector _lambda, Vector _mu, Vector _tension_cutoff, Vector _cohesion, Vector _friction_angle, Vector _dilation_angle, const bool winkler, const double _winkler_rho);
+                           const bool winkler, const double _winkler_rho, const bool dyn_damping, const double _dyn_factor, Vector _bc_id_pa);
    ~LagrangianGeoOperator();
 
 
@@ -256,11 +278,13 @@ public:
    void UpdateMesh(const Vector &S) const;
    // void test_function(const Vector &S, Vector &_test) const;
    void Getdamping(const Vector &S, Vector &_v_damping) const;
+   void Getdamping_comp(const Vector &S, const int &comp, Vector &_v_damping) const;
    void Winkler(const Vector &S, Vector &_winkler, double &_thickness) const;
    
    // Calls UpdateQuadratureData to compute the new qdata.dt_estimate.
    // double GetTimeStepEstimate(const Vector &S) const;
    double GetTimeStepEstimate(const Vector &S, const double dt) const;
+   double GetLengthEstimate(const Vector &S, const double dt) const;
    double GetTimeStepEstimate(const Vector &S, const double dt, bool IamRoot) const;
    void ResetTimeStepEstimate() const;
    void ResetQuadratureData() const { qdata_is_current = false; }
@@ -279,6 +303,8 @@ public:
 
    // Update all internal data on mesh change.
    void TMOPUpdate(const Vector &S, bool quick);
+   void GetErrorEstimates(ParGridFunction &e_gf, Vector & errors);
+
    // void TMOPUpdate(const Vector &S, Coefficient &rho0_coeff, bool quick);
 
    void SetH0(double h0) { qdata.h0 = h0; }

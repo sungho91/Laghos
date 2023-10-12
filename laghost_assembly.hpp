@@ -67,6 +67,8 @@ struct QuadratureData
    // recomputed at every time step to achieve adaptive time stepping.
    double dt_est;
 
+   double h_est;
+
    // mass_scale
    double mscale;
 

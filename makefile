@@ -63,7 +63,7 @@ PREFIX ?= ./bin
 INSTALL = /usr/bin/install
 
 # Use the MFEM source, build, or install directory
-MFEM_DIR ?= ../mfem/build
+MFEM_DIR ?= ../mfem
 CONFIG_MK = $(MFEM_DIR)/config/config.mk
 ifeq ($(wildcard $(CONFIG_MK)),)
    CONFIG_MK = $(MFEM_DIR)/share/mfem/config.mk
@@ -274,8 +274,8 @@ metis:
 		else echo "Using existing ../$(METIS_DIR)"; fi)
 
 MFEM_GIT = https://github.com/mfem/mfem.git
-MFEM_BUILD ?= parallel
-#MFEM_BUILD ?= pcuda -j CUDA_ARCH=sm_70
+#MFEM_BUILD ?= parallel
+MFEM_BUILD ?= pcuda -j CUDA_ARCH=sm_86
 mfem: hypre metis
 	@(if [[ ! -e ../mfem ]]; then cd ..; \
 		git clone --single-branch --branch master --depth 1 $(MFEM_GIT) &&\
