@@ -73,6 +73,45 @@ static long GetMaxRssMB();
 static void display_banner(std::ostream&);
 static void Checks(const int ti, const double norm, int &checks);
 
+class ConductionOperator : public TimeDependentOperator
+{
+protected:
+   ParFiniteElementSpace &fespace;
+   Array<int> ess_tdof_list; // this list remains empty for pure Neumann b.c.
+
+   ParBilinearForm *M;
+   ParBilinearForm *K;
+
+   HypreParMatrix Mmat;
+   HypreParMatrix Kmat;
+   HypreParMatrix *T; // T = M + dt K
+   double current_dt;
+
+   CGSolver M_solver;    // Krylov solver for inverting the mass matrix M
+   HypreSmoother M_prec; // Preconditioner for the mass matrix M
+
+   CGSolver T_solver;    // Implicit solver for T = M + dt K
+   HypreSmoother T_prec; // Preconditioner for the implicit solver
+
+   double alpha, kappa;
+
+   mutable Vector z; // auxiliary vector
+
+public:
+   ConductionOperator(ParFiniteElementSpace &f, double alpha, double kappa,
+                      const Vector &u);
+
+   virtual void Mult(const Vector &u, Vector &du_dt) const;
+   /** Solve the Backward-Euler equation: k = f(u + dt*k, t), for the unknown k.
+       This is the only requirement for high-order SDIRK implicit integration.*/
+   virtual void ImplicitSolve(const double dt, const Vector &u, Vector &k);
+
+   /// Update the diffusion BilinearForm K using the given true-dof vector `u`.
+   void SetParameters(const Vector &u);
+
+   virtual ~ConductionOperator();
+};
+
 void TMOPUpdate(BlockVector &S, BlockVector &S_old,
                Array<int> &offset,
                ParGridFunction &x_gf,
@@ -106,11 +145,12 @@ int main(int argc, char *argv[])
 
    Param param;
    get_input_parameters(input_parameter_file, param);
-   
+
    Array<int> cxyz; // Leave undefined. It won't be used.
    // double init_dt = 1e-1;
    double blast_energy = 0.0;
-   double v_unit = 1.0/86400/365.25;
+   // double v_unit = 1.0/86400/365.25;
+   double v_unit = 1.0;
    // double blast_energy = 1.0e-6;
    double blast_position[] = {0.0, 0.5, 0.0};
    // double blast_energy2 = 0.1;
@@ -125,6 +165,13 @@ int main(int argc, char *argv[])
    //
    double itime{1.0e-100};
    // time_reduction{0.25};
+
+   // parameter for surface topography
+   // bool surface_diff = param.control.surf_proc;
+   double alpha = 0.0;
+   // double kappa = param.control.surf_diff;
+   double dummy = 0.0;
+
    // Let some options be overwritten by command-line options.
    args.AddOption(&param.sim.dim, "-dim", "--dimension", "Dimension of the problem.");
    args.AddOption(&param.sim.t_final, "-tf", "--t-final",
@@ -355,6 +402,7 @@ int main(int argc, char *argv[])
    if(param.sim.year)
    {
       param.sim.t_final = param.sim.t_final * 86400 * 365.25;
+      v_unit = 1.0/86400/365.25;
       
       if (mpi.Root())
       {
@@ -721,6 +769,8 @@ int main(int argc, char *argv[])
    {v_unit = v_unit/100.0;}
    else if(param.bc.bc_unit =="mm/yr")
    {v_unit = v_unit/1000.0;}
+   else if(param.bc.bc_unit =="m/s")
+   {v_unit = v_unit*1.0;}
 
    // Dirichlet type boundary condition (i.e., fixing velocity component at boundaries)
    Array<int> ess_tdofs, ess_vdofs;
@@ -766,20 +816,21 @@ int main(int argc, char *argv[])
                   case 2: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
                   case 3: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,2); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
                   case 4: ess_bdr[i] = 1; H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); break;
-                  case 5: 
+                  case 5:
                      ess_bdr[i] = 1; 
                      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,0); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
                      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
                      break;
-                  case 6: 
+                  case 6:
                      ess_bdr[i] = 1; 
-                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,0); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,0); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
                      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,2); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
                      break;
                   case 7: 
                      ess_bdr[i] = 1; 
+                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,1); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,1); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
                      H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,2); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,2); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
-                     H1FESpace.GetEssentialTrueDofs(ess_bdr, dofs_list,3); ess_tdofs.Append(dofs_list); H1FESpace.GetEssentialVDofs(ess_bdr, dofs_marker,3); FiniteElementSpace::MarkerToList(dofs_marker, dofs_list); ess_vdofs.Append(dofs_list); 
+                     break; 
 
                   default:
                      if (myid == 0)
@@ -812,6 +863,37 @@ int main(int argc, char *argv[])
          if (myid == 0)
          {
             cout << "Unknown ODE solver type: " << param.solver.ode_solver_type << '\n';
+         }
+         delete pmesh;
+         MPI_Finalize();
+         return 3;
+   }
+
+   // 4. Define the ODE solver for submesh used for time integration. Several implicit
+   //    singly diagonal implicit Runge-Kutta (SDIRK) methods, as well as
+   //    explicit Runge-Kutta methods are available.
+   int ode_solver_type = 12;
+   ODESolver *ode_solver_sub;
+   switch (ode_solver_type)
+   {
+      // Implicit L-stable methods
+      case 1:  ode_solver_sub = new BackwardEulerSolver; break;
+      case 2:  ode_solver_sub = new SDIRK23Solver(2); break;
+      case 3:  ode_solver_sub = new SDIRK33Solver; break;
+      // Explicit methods
+      case 11: ode_solver_sub = new ForwardEulerSolver; break;
+      case 12: ode_solver_sub = new RK2Solver(0.5); break; // midpoint method
+      case 13: ode_solver_sub = new RK3SSPSolver; break;
+      case 14: ode_solver_sub = new RK4Solver; break;
+      case 15: ode_solver_sub = new GeneralizedAlphaSolver(0.5); break;
+      // Implicit A-stable methods (not L-stable)
+      case 22: ode_solver_sub = new ImplicitMidpointSolver; break;
+      case 23: ode_solver_sub = new SDIRK23Solver; break;
+      case 24: ode_solver_sub = new SDIRK34Solver; break;
+      default:
+         if (myid == 0)
+         {
+            cout << "Unknown ODE solver type: " << ode_solver_type << '\n';
          }
          delete pmesh;
          MPI_Finalize();
@@ -865,92 +947,28 @@ int main(int argc, char *argv[])
    x_gf.SyncAliasMemory(S);
 
 
-   // // Create a "sub mesh" from the boundary elements with attribute 3 (top boundary) for Surface process
-   // Array<int> bdr_attrs(1);
-   // bdr_attrs[0] = 4;
-   // ParSubMesh submesh(ParSubMesh::CreateFromBoundary(*pmesh, bdr_attrs));
-   // ParFiniteElementSpace sub_fespace0(&submesh, &H1FEC, pmesh->Dimension()); // nodes of submesh
-   // ParFiniteElementSpace sub_fespace1(&submesh, &H1FEC); // topography
+   // Create a "sub mesh" from the boundary elements with attribute 3 (top boundary) for Surface process
+   Array<int> bdr_attrs(1);
+   bdr_attrs[0] = 4;
+   ParSubMesh submesh(ParSubMesh::CreateFromBoundary(*pmesh, bdr_attrs));
+   ParFiniteElementSpace sub_fespace0(&submesh, &H1FEC, pmesh->Dimension()); // nodes of submesh
+   ParFiniteElementSpace sub_fespace1(&submesh, &H1FEC); // topography
 
-   // // Solve a Poisson problem on the boundary. This just follows ex0p.
-   // Array<int> boundary_dofs;
-   // sub_fespace1.GetBoundaryTrueDofs(boundary_dofs);
-   // ParGridFunction x_top(&sub_fespace0);
-   // ParGridFunction topo(&sub_fespace1);
-   // topo=param.control.thickness;
-   // submesh.SetNodalGridFunction(&x_top);
-   
-   // for (int i = 0; i < x.Size(); i++)
-   // {
-   //   std::cout << i << "/"<< x.Size() << "," << x[i] << std::endl;
-   // }
+   // Solve a Poisson problem on the boundary. This just follows ex0p.
+   Array<int> boundary_dofs;
+   sub_fespace1.GetBoundaryTrueDofs(boundary_dofs);
+   ParGridFunction x_top(&sub_fespace0); 
+   ParGridFunction x_top_old(&sub_fespace0);
+   ParGridFunction topo(&sub_fespace1);
+   submesh.SetNodalGridFunction(&x_top);
+   submesh.SetNodalGridFunction(&x_top_old);
+   for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
 
-   // for (int i = 0; i < boundary_dofs.Size(); i++)
-   // {
-   //   std::cout << i << "/"<< boundary_dofs.Size() << "," << x[boundary_dofs[i]] << std::endl;
-   // }
+   Vector topo_t, topo_t_old;
+   topo.GetTrueDofs(topo_t); topo_t_old=topo;
 
-   // ParaViewDataCollection *pdd = NULL;
-   // if (param.sim.paraview)
-   // {
-   //    pdd = new ParaViewDataCollection("test", &submesh);
-   //    pdd->SetPrefixPath("ParaView");
-   //    pdd->RegisterField("test",  &x);
-   //    pdd->SetDataFormat(VTKFormat::BINARY);
-   //    pdd->SetHighOrderOutput(true);
-   //    pdd->SetCycle(0);
-   //    pdd->SetTime(0.0);
-   //    pdd->Save();
-   // }
-
-
-   // ParSubMesh::Transfer(x, x_gf); // update adjusted nodes on top boundary 
-
-   // Array<int> boundary_dofs;
-   // sub_fespace.GetBoundaryTrueDofs(boundary_dofs);
-   // ParGridFunction x_top(&sub_fespace);
-   // // std::cout<<x_top.Size() <<std::endl;
-   // x_top = param.control.thickness;
-   // ConstantCoefficient diffusivity(1e-6);
-   // ParLinearForm b_top(&sub_fespace);
-   // b_top.AddDomainIntegrator(new DomainLFIntegrator(diffusivity));
-   // b_top.Assemble();
-   // ParBilinearForm a_top(&sub_fespace);
-   // a_top.AddDomainIntegrator(new DiffusionIntegrator);
-   // a_top.Assemble();
-
-   // // Surface diffusion
-   // HypreParMatrix A_top;
-   // Vector B_top, X_top;
-   // // b_top *= dt;
-   // a_top.FormLinearSystem(boundary_dofs, x_top, b_top, A_top, X_top, B_top);
-   // HypreBoomerAMG M_top(A_top);
-   // CGSolver cg(MPI_COMM_WORLD);
-   // cg.SetRelTol(1e-12);
-   // cg.SetMaxIter(2000);
-   // cg.SetPrintLevel(1);
-   // cg.SetPreconditioner(M_top);
-   // cg.SetOperator(A_top);
-   // cg.Mult(B_top, X_top);
-   // a_top.RecoverFEMSolution(X_top, b_top, x_top);
-   // ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
-
-
-   // xyz coordinates in L2 space
-   // ParGridFunction x_gf_l2(&L2FESpace);
-   // ParGridFunction y_gf_l2(&L2FESpace);
-   // ParGridFunction z_gf_l2(&L2FESpace);
-   // x_gf_l2 = 0.0; y_gf_l2 = 0.0; z_gf_l2 = 0.0;
-   // FunctionCoefficient x_coeff(x_l2);
-   // FunctionCoefficient y_coeff(y_l2);
-   // x_gf_l2.ProjectCoefficient(x_coeff);
-   // y_gf_l2.ProjectCoefficient(y_coeff);
-
-   // if(dim == 3)
-   // {
-   //    FunctionCoefficient z_coeff(z_l2);
-   //    z_gf_l2.ProjectCoefficient(z_coeff);
-   // }
+   // 9. Initialize the conduction operator for surface diffusion
+   ConductionOperator oper_sub(sub_fespace1, alpha, param.control.surf_diff, topo_t);
 
    // xyz coordinates in L2 space
    ParFiniteElementSpace L2FESpace_xyz(pmesh, &L2FEC, dim); //
@@ -1472,9 +1490,10 @@ int main(int argc, char *argv[])
    ParGridFunction p_gf_old(&L2FESpace);
    p_gf=0.0; p_gf_old = 0.0;
    Vector weak_location(dim);
-   if(dim = 2){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y;}
-   else if(dim =3){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y; weak_location[2] = param.mat.weak_z;}
+   if(dim == 2){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y;}
+   else if(dim ==3){weak_location[0] = param.mat.weak_x; weak_location[1] = param.mat.weak_y; weak_location[2] = param.mat.weak_z;}
    PlasticCoefficient p_coeff(dim, xyz_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);
+
    // PlasticCoefficient p_coeff(dim, x_gf_l2, y_gf_l2, z_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);
    
    p_gf.ProjectCoefficient(p_coeff);
@@ -1513,7 +1532,7 @@ int main(int argc, char *argv[])
    // ParGridFunction mat_gf(&mat_fes);
    // FunctionCoefficient mat_coeff(gamma_func);
    // mat_gf.ProjectCoefficient(mat_coeff);
-   
+
    int source = 0; bool visc = false, vorticity = false;
    // switch (param.sim.problem)
    // {
@@ -1539,6 +1558,7 @@ int main(int argc, char *argv[])
                                           param.solver.ftz_tol,
                                           param.mesh.order_q, lambda0_gf, mu0_gf, param.control.mscale, param.control.gravity, param.control.thickness,
                                           param.control.winkler_foundation, param.control.winkler_rho, param.control.dyn_damping, param.control.dyn_factor, bc_id_pa);
+    
 
    socketstream vis_rho, vis_v, vis_e;
    char vishost[] = "localhost";
@@ -1627,6 +1647,11 @@ int main(int argc, char *argv[])
    BlockVector S_old(S);
    long mem=0, mmax=0, msum=0;
    int checks = 0;
+
+   // 10. Perform time-integration (looping over the time iterations, ti, with a
+   //     time-step dt).
+   ode_solver_sub->Init(oper_sub);
+
    //   const double internal_energy = geo.InternalEnergy(e_gf);
    //   const double kinetic_energy = geo.KineticEnergy(v_gf);
    //   if (mpi.Root())
@@ -1696,15 +1721,15 @@ int main(int argc, char *argv[])
       // to advance.
       ode_solver->Step(S, t, dt);
 
+      
       if(param.mat.plastic)
       {
+         // std::cout << dim << std::endl;
          Returnmapping (s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle, dilation_angle, plastic_viscosity, dt_old);
          n_p_gf  = ini_p_gf;
          n_p_gf -= p_gf;
          n_p_gf.Neg();
       }
-
-      if(param.control.winkler_foundation & param.control.winkler_flat) {for( int i = 0; i < x_gf.Size(); i++ ){if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}}}
 
       if (param.tmop.tmop)
       {
@@ -1734,33 +1759,33 @@ int main(int argc, char *argv[])
             x_old_gf = *pmesh->GetNodes();
             x_mod_gf = *pmesh->GetNodes();
             
-            // if(param.control.winkler_foundation & param.control.winkler_flat)
-            // {
-            //    if(myid == 0)
-            //    {
-            //       cout << "*** flattening " << endl;
-            //    }
+            if(param.control.winkler_foundation & param.control.winkler_flat)
+            {
+               if(myid == 0)
+               {
+                  cout << "*** flattening " << endl;
+               }
 
-            //    for( int i = 0; i < x_gf.Size(); i++ )
-            //    {
-            //       if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}
-            //       // if(flattening[i] > 0.0){x_old_gf[i] = x_ini_gf[i];}
-            //    }
-            // }
+               for( int i = 0; i < x_gf.Size(); i++ )
+               {
+                  if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i]; x_old_gf[i] = x_ini_gf[i];}
+
+               }
+            }
 
             ti = ti-1;
 
             if (param.sim.visit)
             {
                   visit_dc.SetCycle(ti);
-                  visit_dc.SetTime(t*0.995);
+                  visit_dc.SetTime(t*0.999);
                   visit_dc.Save();
             }
 
             if (param.sim.paraview)
             {
                   pd->SetCycle(ti);
-                  pd->SetTime(t*0.995);
+                  pd->SetTime(t*0.999);
                   pd->Save();
             }
 
@@ -1774,10 +1799,12 @@ int main(int argc, char *argv[])
 
             mesh_changed = true;
 
+
             x_gf = x_mod_gf; x_gf *= param.tmop.ale;
             x_gf.Add(1.0 - param.tmop.ale, x_old_gf);
 
             // L2 target xyz after remeshing
+            // x_gf += 1.0; // test for translation
             xyz_gf_l2.ProjectCoefficient(xyz_coeff);
             pmesh_copy->NewNodes(x_gf, false); // Deformined mesh for H1 interpolation 
 
@@ -1818,29 +1845,33 @@ int main(int argc, char *argv[])
                else{for(int i = 0; i < S1.Size(); i++ ){s_gf[i+S1.Size()*0]=S1[i];s_gf[i+S1.Size()*1]=S2[i];s_gf[i+S1.Size()*2]=S3[i];s_gf[i+S1.Size()*3]=S4[i];s_gf[i+S1.Size()*4]=S5[i];s_gf[i+S1.Size()*5]=S6[i];}}
 
                if(myid==0){std::cout << "remapping for H1" << std::endl;}
-
-               int NE_opt = pmesh_copy->GetNE(), 
-                   nsp1 = L2FESpace.GetFE(0)->GetNodes().GetNPoints(), 
-                   nsp2 = L2FESpace_stress.GetFE(0)->GetNodes().GetNPoints(), 
-                   tar_ncomp = v_gf.VectorDim();
-               // H1 space
-               // Generate list of points where the grid function will be evaluated.
+               // int NE_opt = pmesh_copy->GetNE(), 
+               //     nsp1 = L2FESpace.GetFE(0)->GetNodes().GetNPoints(), 
+               //     nsp2 = L2FESpace_stress.GetFE(0)->GetNodes().GetNPoints(), 
+               //     tar_ncomp = v_gf.VectorDim();
+               // // H1 space
+               // // Generate list of points where the grid function will be evaluated.
                Vector vxyz;
                int point_ordering;
                vxyz = *pmesh_copy->GetNodes(); // from target mesh
                point_ordering = pmesh_copy->GetNodes()->FESpace()->GetOrdering();
-               int nodes_cnt = vxyz.Size() / dim;
+               // int nodes_cnt = vxyz.Size() / dim;
 
-               // Find and Interpolate FE function values on the desired points.
-               Vector interp_vals(nodes_cnt*tar_ncomp);
-               FindPointsGSLIB finder;
-               // FindPointsGSLIB finder(MPI_COMM_WORLD);
+               // // Find and Interpolate FE function values on the desired points.
+               // // Vector interp_vals(nodes_cnt*tar_ncomp);
+               FindPointsGSLIB finder(MPI_COMM_WORLD);
                finder.Setup(*pmesh_old);
+               Vector interp_vals(v_gf.Size());
+               // finder.Interpolate(*pmesh_old, x_gf, v_gf, interp_vals);
+               
                finder.Interpolate(vxyz, v_gf, interp_vals, point_ordering);
-               v_gf = interp_vals;
+               // v_gf = interp_vals;
+
+               for(int i = 0; i < interp_vals.Size(); i++ ){if(interp_vals[i] != 0.0){v_gf[i] = interp_vals[i];}}
 
                finder.Interpolate(vxyz, u_gf, interp_vals, point_ordering);
-               u_gf = interp_vals;
+               // u_gf = interp_vals;
+               for(int i = 0; i < interp_vals.Size(); i++ ){if(interp_vals[i] != 0.0){u_gf[i] = interp_vals[i];}}
 
                // for (int i = 0; i < vxyz.Size()/2; i++)
                // {
@@ -2068,6 +2099,7 @@ int main(int argc, char *argv[])
             t = t_old;
             S = S_old;
             p_gf = p_gf_old; ini_p_gf = ini_p_old_gf;
+            // if(surface_diff){x_top=x_top_old; topo=topo_t_old;}
             geo.ResetQuadratureData();
             // if (mpi.Root()) { cout << "Repeating step " << ti << ", dt " << dt/86400/365.25 << std::setprecision(6) << std::scientific << " yr" << endl; }
             if (steps < param.sim.max_tsteps) { last_step = false; }
@@ -2135,6 +2167,22 @@ int main(int argc, char *argv[])
       //    for( int i = 0; i < topo.Size(); i++ ){x_top[i+topo.Size()] = x_top[i+topo.Size()] + (x_top[i+topo.Size()]-topo[i])*dt;}
       //    ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
       // }
+
+
+      if(param.control.surf_proc)
+      {
+         ParSubMesh::Transfer(x_gf, x_top); // update current mesh to submesh
+         for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
+         topo.GetTrueDofs(topo_t); 
+         x_top_old=x_top; topo_t_old=topo; 
+         ode_solver_sub->Step(topo_t, t, dt); t=t-dt;
+         topo.SetFromTrueDofs(topo_t);
+         for (int i = 0; i < topo.Size(); i++){x_top[i+topo.Size()] = topo[i];}
+         submesh.NewNodes(x_top, false);
+         ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
+      }
+
+      // if(param.control.winkler_foundation & param.control.winkler_flat) {for( int i = 0; i < x_gf.Size(); i++ ){if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}}}
       
       x_gf.SyncAliasMemory(S);
       v_gf.SyncAliasMemory(S);
@@ -2144,6 +2192,7 @@ int main(int argc, char *argv[])
 
       s_old_gf = s_gf; // storing old Caushy stress
 
+      
       // Adding stress increment to total stress and storing spin rate
       // Make sure that the mesh corresponds to the new solution state. This is
       // needed, because some time integrators use different S-type vectors
@@ -2372,6 +2421,7 @@ int main(int argc, char *argv[])
    // Free the used memory.
    delete ode_solver;
    delete pmesh;
+   delete ode_solver_sub;
 
    return 0;
 }
@@ -2458,6 +2508,97 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
    H1FESpace->UpdatesFinished();
    L2FESpace->UpdatesFinished();
    L2FESpace_stress->UpdatesFinished();
+}
+
+ConductionOperator::ConductionOperator(ParFiniteElementSpace &f, double al,
+                                       double kap, const Vector &u)
+   : TimeDependentOperator(f.GetTrueVSize(), 0.0), fespace(f), M(NULL), K(NULL),
+     T(NULL), current_dt(0.0),
+     M_solver(f.GetComm()), T_solver(f.GetComm()), z(height)
+{
+   const double rel_tol = 1e-8;
+
+   M = new ParBilinearForm(&fespace);
+   M->AddDomainIntegrator(new MassIntegrator());
+   M->Assemble(0); // keep sparsity pattern of M and K the same
+   M->FormSystemMatrix(ess_tdof_list, Mmat);
+
+   M_solver.iterative_mode = false;
+   M_solver.SetRelTol(rel_tol);
+   M_solver.SetAbsTol(0.0);
+   M_solver.SetMaxIter(100);
+   M_solver.SetPrintLevel(0);
+   M_prec.SetType(HypreSmoother::Jacobi);
+   M_solver.SetPreconditioner(M_prec);
+   M_solver.SetOperator(Mmat);
+
+   alpha = al;
+   kappa = kap;
+
+   T_solver.iterative_mode = false;
+   T_solver.SetRelTol(rel_tol);
+   T_solver.SetAbsTol(0.0);
+   T_solver.SetMaxIter(100);
+   T_solver.SetPrintLevel(0);
+   T_solver.SetPreconditioner(T_prec);
+
+   SetParameters(u);
+}
+
+void ConductionOperator::Mult(const Vector &u, Vector &du_dt) const
+{
+   // Compute:
+   //    du_dt = M^{-1}*-Ku
+   // for du_dt, where K is linearized by using u from the previous timestep
+   Kmat.Mult(u, z);
+   z.Neg(); // z = -z
+   M_solver.Mult(z, du_dt);
+}
+
+void ConductionOperator::ImplicitSolve(const double dt,
+                                       const Vector &u, Vector &du_dt)
+{
+   // Solve the equation:
+   //    du_dt = M^{-1}*[-K(u + dt*du_dt)]
+   // for du_dt, where K is linearized by using u from the previous timestep
+   if (!T)
+   {
+      T = Add(1.0, Mmat, dt, Kmat);
+      current_dt = dt;
+      T_solver.SetOperator(*T);
+   }
+   MFEM_VERIFY(dt == current_dt, ""); // SDIRK methods use the same dt
+   Kmat.Mult(u, z);
+   z.Neg();
+   T_solver.Mult(z, du_dt);
+}
+
+void ConductionOperator::SetParameters(const Vector &u)
+{
+   ParGridFunction u_alpha_gf(&fespace);
+   u_alpha_gf.SetFromTrueDofs(u);
+   for (int i = 0; i < u_alpha_gf.Size(); i++)
+   {
+      u_alpha_gf(i) = kappa + alpha*u_alpha_gf(i);
+   }
+
+   delete K;
+   K = new ParBilinearForm(&fespace);
+
+   GridFunctionCoefficient u_coeff(&u_alpha_gf);
+
+   K->AddDomainIntegrator(new DiffusionIntegrator(u_coeff));
+   K->Assemble(0); // keep sparsity pattern of M and K the same
+   K->FormSystemMatrix(ess_tdof_list, Kmat);
+   delete T;
+   T = NULL; // re-compute T on the next ImplicitSolve
+}
+
+ConductionOperator::~ConductionOperator()
+{
+   delete T;
+   delete M;
+   delete K;
 }
 
 static void display_banner(std::ostream &os)

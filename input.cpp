@@ -96,6 +96,8 @@ static void declare_parameters(po::options_description &cfg,
         ("control.mass_bal", po::value<bool>(&p.control.mass_bal)->default_value(false)," ")
         ("control.dyn_damping", po::value<bool>(&p.control.dyn_damping)->default_value(true)," ")
         ("control.dyn_factor", po::value<double>(&p.control.dyn_factor)->default_value(0.8), " ")
+        ("control.surf_proc", po::value<bool>(&p.control.surf_proc)->default_value(true)," ")
+        ("control.surf_diff", po::value<double>(&p.control.surf_diff)->default_value(1.0e-7), " ")
         ;
 
     cfg.add_options()

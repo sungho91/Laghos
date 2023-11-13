@@ -57,9 +57,9 @@ void CGHOSolver::CalcHOSolution(const Vector &u, Vector &du) const
       M_prec = new HypreSmoother(*M_mat, HypreSmoother::Jacobi);
    }
    M_solver.SetPreconditioner(*M_prec);
-   M_solver.SetRelTol(1e-12);
+   M_solver.SetRelTol(1e-14);
    M_solver.SetAbsTol(0.0);
-   M_solver.SetMaxIter(500);
+   M_solver.SetMaxIter(9999);
    M_solver.SetPrintLevel(0);
 
    M_solver.Mult(rhs, du);

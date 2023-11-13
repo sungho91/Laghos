@@ -33,6 +33,7 @@ namespace mfem
       double viscosity{0.0};
       double relax{0.0};
       double relax_limit{1.0};
+      double dt_scaled{0.0};
       double numerator   = {0.0};
       double denominator = {0.0};
       double pls_old = {0.0}; // cumulative 2nd invariant of plastic strain
@@ -113,7 +114,7 @@ namespace mfem
 
             N_phi = (1+sin(DEG2RAD*friction_angle[mat]))/(1-sin(DEG2RAD*friction_angle[mat]));
             st_N_phi = cos(DEG2RAD*friction_angle[mat])/(1-sin(DEG2RAD*friction_angle[mat]));
-            N_psi = -1*(1+sin(DEG2RAD*dilation_angle[mat]))/(1-sin(DEG2RAD*dilation_angle[mat]));
+            N_psi = -1*(1+sin(DEG2RAD*dilation_angle[mat]))/(1-sin(DEG2RAD*dilation_angle[mat])); // partial_g/partial_sig3
             
             coh_str = cohesion0[mat];
 
@@ -145,12 +146,13 @@ namespace mfem
             fh = sig3 - ten_cut + (sqrt(N_phi*N_phi + 1.0)+ N_phi)*(sig1 - N_phi*ten_cut + 2*coh_str*st_N_phi);
 
             depls = 0.0;
-            
+                    
             if(fs < 0 & fh < 0) // stress correction at shear failure
             {
+               // Equations 28 and 30 from Choi et al. (2013; DynEarthSol2D: An efficient unstructured finite element method to study long-term tectonic deformation). 
                beta = fs;
                beta = beta / (((lambda[mat]+2*mu[mat])*1 - N_phi*lambda[mat]*1) + (lambda[mat]*N_psi - N_phi*(lambda[mat]+2*mu[mat])*N_psi));
-
+               
                plastic_str(0,0) = (lambda[mat] + 2*mu[mat] + lambda[mat]*N_psi) * beta; 
                plastic_str(1,1) = (lambda[mat] + lambda[mat]*N_psi) * beta;
                plastic_str(2,2) = (lambda[mat] + (lambda[mat]+2*mu[mat])*N_psi) * beta;
@@ -212,23 +214,34 @@ namespace mfem
             relax = exp(-dt_old/viscosity);
             numerator  = fabs(1 - relax);
             denominator= fabs(dt_old/viscosity);
-            
+            dt_scaled = dt_old/viscosity;
+
             // Based on L'Hôpital's rule, 0/0 become 1 
             if((numerator > 1e-15) & (denominator > 1e-15)){relax_limit = (1 - relax)/(dt_old/viscosity);}
+
+
+            // std::cout 
 
             if(viscosity > 1e+100){viscoplastic = false;}
 
             if((fs < 0 & fh < 0) | (ft > 0 & fh > 0))
             {
+               // if(i ==0){std::cout << fs <<","<< beta*1e6 << ","<< dt_old << "," << relax <<","<< relax_limit << std::endl;}
                if(dim ==2)
                {
                   if(viscoplastic)
                   {
                      // Closed-form algorithm for viscoplasticity from Computational Inelasticity on p. 218 (Simo and Hughes, 1998)
-                     s_gf[i+nsize*0]=esig_old(0,0)*relax + (1 - relax)*plastic_sig(0,0) + relax_limit*esig_inc(0,0); 
-                     s_gf[i+nsize*2]=esig_old(0,2)*relax + (1 - relax)*plastic_sig(0,2) + relax_limit*esig_inc(0,2); 
-                     s_gf[i+nsize*2]=esig_old(2,0)*relax + (1 - relax)*plastic_sig(2,0) + relax_limit*esig_inc(2,0); 
-                     s_gf[i+nsize*1]=esig_old(2,2)*relax + (1 - relax)*plastic_sig(2,2) + relax_limit*esig_inc(2,2); 
+                     // s_gf[i+nsize*0]=esig_old(0,0)*relax + (1.0 - relax)*plastic_sig(0,0) + relax_limit*esig_inc(0,0); 
+                     // s_gf[i+nsize*2]=esig_old(0,2)*relax + (1.0 - relax)*plastic_sig(0,2) + relax_limit*esig_inc(0,2); 
+                     // s_gf[i+nsize*2]=esig_old(2,0)*relax + (1.0 - relax)*plastic_sig(2,0) + relax_limit*esig_inc(2,0); 
+                     // s_gf[i+nsize*1]=esig_old(2,2)*relax + (1.0 - relax)*plastic_sig(2,2) + relax_limit*esig_inc(2,2);
+
+                     // Implicit backward Euler algorithm
+                     s_gf[i+nsize*0]=((esig_old(0,0) + esig_inc(0,0)) + dt_scaled*plastic_sig(0,0))/(1.0+dt_scaled);
+                     s_gf[i+nsize*2]=((esig_old(0,2) + esig_inc(0,2)) + dt_scaled*plastic_sig(0,2))/(1.0+dt_scaled);
+                     s_gf[i+nsize*2]=((esig_old(2,0) + esig_inc(2,0)) + dt_scaled*plastic_sig(2,0))/(1.0+dt_scaled);
+                     s_gf[i+nsize*1]=((esig_old(2,2) + esig_inc(2,2)) + dt_scaled*plastic_sig(2,2))/(1.0+dt_scaled);
                   }
                   else
                   {
@@ -240,17 +253,28 @@ namespace mfem
                {
                   if(viscoplastic)
                   {
-                     // Closed-form algorithm for viscoplasticity from Computational Inelasticity on p. 218 (Simo and Hughes, 1998)
-                     s_gf[i+nsize*0]=esig_old(0,0)*relax + (1.0 - relax)*plastic_sig(0,0) + relax_limit*esig_inc(0,0); 
-                     s_gf[i+nsize*3]=esig_old(0,1)*relax + (1.0 - relax)*plastic_sig(0,1) + relax_limit*esig_inc(0,1); 
-                     s_gf[i+nsize*4]=esig_old(0,2)*relax + (1.0 - relax)*plastic_sig(0,2) + relax_limit*esig_inc(0,2); 
-                     s_gf[i+nsize*3]=esig_old(1,0)*relax + (1.0 - relax)*plastic_sig(1,0) + relax_limit*esig_inc(1,0); 
-                     s_gf[i+nsize*1]=esig_old(1,1)*relax + (1.0 - relax)*plastic_sig(1,1) + relax_limit*esig_inc(1,1); 
-                     s_gf[i+nsize*5]=esig_old(1,2)*relax + (1.0 - relax)*plastic_sig(1,2) + relax_limit*esig_inc(1,2); 
-                     s_gf[i+nsize*4]=esig_old(2,0)*relax + (1.0 - relax)*plastic_sig(2,0) + relax_limit*esig_inc(2,0); 
-                     s_gf[i+nsize*5]=esig_old(2,1)*relax + (1.0 - relax)*plastic_sig(2,1) + relax_limit*esig_inc(2,1); 
-                     s_gf[i+nsize*2]=esig_old(2,2)*relax + (1.0 - relax)*plastic_sig(2,2) + relax_limit*esig_inc(2,2); 
-                     // std::cout << esig_old(0,0)*relax*1e-6 << " ," << (1.0 - relax)*plastic_sig(0,0)*1e-6 << " ," << relax_limit*esig_inc(0,0)*1e-6 << std::endl;
+                     // // Closed-form algorithm for viscoplasticity from Computational Inelasticity on p. 218 (Simo and Hughes, 1998)
+                     // s_gf[i+nsize*0]=esig_old(0,0)*relax + (1.0 - relax)*plastic_sig(0,0) + relax_limit*esig_inc(0,0); 
+                     // s_gf[i+nsize*3]=esig_old(0,1)*relax + (1.0 - relax)*plastic_sig(0,1) + relax_limit*esig_inc(0,1); 
+                     // s_gf[i+nsize*4]=esig_old(0,2)*relax + (1.0 - relax)*plastic_sig(0,2) + relax_limit*esig_inc(0,2); 
+                     // s_gf[i+nsize*3]=esig_old(1,0)*relax + (1.0 - relax)*plastic_sig(1,0) + relax_limit*esig_inc(1,0); 
+                     // s_gf[i+nsize*1]=esig_old(1,1)*relax + (1.0 - relax)*plastic_sig(1,1) + relax_limit*esig_inc(1,1); 
+                     // s_gf[i+nsize*5]=esig_old(1,2)*relax + (1.0 - relax)*plastic_sig(1,2) + relax_limit*esig_inc(1,2); 
+                     // s_gf[i+nsize*4]=esig_old(2,0)*relax + (1.0 - relax)*plastic_sig(2,0) + relax_limit*esig_inc(2,0); 
+                     // s_gf[i+nsize*5]=esig_old(2,1)*relax + (1.0 - relax)*plastic_sig(2,1) + relax_limit*esig_inc(2,1); 
+                     // s_gf[i+nsize*2]=esig_old(2,2)*relax + (1.0 - relax)*plastic_sig(2,2) + relax_limit*esig_inc(2,2);
+
+                     // Implicit backward Euler algorithm
+                     s_gf[i+nsize*0]=((esig_old(0,0) + esig_inc(0,0)) + dt_scaled*plastic_sig(0,0))/(1.0+dt_scaled);
+                     s_gf[i+nsize*3]=((esig_old(0,1) + esig_inc(0,1)) + dt_scaled*plastic_sig(0,1))/(1.0+dt_scaled);
+                     s_gf[i+nsize*4]=((esig_old(0,2) + esig_inc(0,2)) + dt_scaled*plastic_sig(0,2))/(1.0+dt_scaled);
+                     s_gf[i+nsize*3]=((esig_old(1,0) + esig_inc(1,0)) + dt_scaled*plastic_sig(1,0))/(1.0+dt_scaled);
+                     s_gf[i+nsize*1]=((esig_old(1,1) + esig_inc(1,1)) + dt_scaled*plastic_sig(1,1))/(1.0+dt_scaled);
+                     s_gf[i+nsize*5]=((esig_old(1,2) + esig_inc(1,2)) + dt_scaled*plastic_sig(1,2))/(1.0+dt_scaled);
+                     s_gf[i+nsize*4]=((esig_old(2,0) + esig_inc(2,0)) + dt_scaled*plastic_sig(2,0))/(1.0+dt_scaled);
+                     s_gf[i+nsize*5]=((esig_old(2,1) + esig_inc(2,1)) + dt_scaled*plastic_sig(2,1))/(1.0+dt_scaled);
+                     s_gf[i+nsize*2]=((esig_old(2,2) + esig_inc(2,2)) + dt_scaled*plastic_sig(2,2))/(1.0+dt_scaled);
+
                   }
                   else
                   {
@@ -262,8 +286,17 @@ namespace mfem
             }
             
             // Adding 2nd invariant of plastic strain increment
+
+            if(viscoplastic)
+            {
+               depls = (1 - relax)*depls; 
+               p_gf[i] += depls;
+            }
+            else
+            {
+               p_gf[i] += depls;
+            }
             
-            p_gf[i] += depls;
       }
    }  
 }

@@ -46,6 +46,15 @@ namespace mfem
          {
             K(0) = 0.0;
          }
+
+         // if((xc >= 35e3) & (xc <= 65e3))
+         // {
+         //    K(0) = ini_pls;
+         // }
+         // else
+         // {
+         //    K(0) = 0.0;
+         // }
       }
       virtual ~PlasticCoefficient() { }
    };

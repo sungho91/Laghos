@@ -674,10 +674,15 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S,
    double ref_m = 1/(global_max_vel/(10.0/86400/365.25/100));
    double pseudo_speed = global_max_vel * mass_scale;
    // double mfactor = (pseudo_speed * pseudo_speed) / bulkm;
-   double mfactor = (denm * pseudo_speed * pseudo_speed) / bulkm;
+   double mfactor = (pseudo_speed * pseudo_speed) / bulkm;
+   // double mfactor = (denm * pseudo_speed * pseudo_speed) / bulkm;
    // mfactor = (1/pseudo_speed) / bulkm;
 
-   if(mfactor > 1e-11){mfactor = 1e-11;}
+   // mfactor = 1e-16;
+
+   // if(mfactor > 1e-11){mfactor = 1e-11;}
+   
+   // if(mass_scale = 1.0){mfactor = 1.0;}
 
    // The monolithic BlockVector stores the unknown fields as follows:
    // (Position, Velocity, Specific Internal Energy).

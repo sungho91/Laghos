@@ -68,6 +68,8 @@ struct Control {
     bool   mass_bal;
     bool   dyn_damping;
     double dyn_factor;
+    bool   surf_proc;
+    double surf_diff;
 };
 
 struct Mesh_param {
