@@ -23,7 +23,8 @@ namespace mfem
       bool visualization    = false;
       int dim = pmesh->Dimension();
 
-      // 4. Define a finite element space on the mesh. Here we use vector finite
+      if(fdscheme){pa = false;}
+   // 4. Define a finite element space on the mesh. Here we use vector finite
    //    elements which are tensor products of quadratic finite elements. The
    //    number of components in the vector finite element space is specified by
    //    the last parameter of the FiniteElementSpace constructor.
@@ -647,16 +648,20 @@ namespace mfem
    double minJ0;
    MPI_Allreduce(&min_detJ, &minJ0, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
    min_detJ = minJ0;
-   // if (myid == 0)
-   // { cout << "Minimum det(J) of the original mesh is " << min_detJ << endl; }
+   if (myid == 0)
+   { cout << "Minimum det(J) of the original mesh is " << min_detJ << endl; }
 
+   // Force to run negative det J
+   // min_detJ = 1.0;
    if (min_detJ < 0.0 && barrier_type == 0
        && metric_id != 22 && metric_id != 211 && metric_id != 252
        && metric_id != 311 && metric_id != 313 && metric_id != 352)
    {
       MFEM_ABORT("The input mesh is inverted! Try an untangling metric.");
    }
-   if (min_detJ < 0.0)
+
+
+  if (min_detJ < 0.0)
    {
       MFEM_VERIFY(target_t == TargetConstructor::IDEAL_SHAPE_UNIT_SIZE,
                   "Untangling is supported only for ideal targets.");
@@ -669,7 +674,8 @@ namespace mfem
       MPI_Allreduce(&h0min, &h0min_all, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
       // Slightly below minJ0 to avoid div by 0.
       min_detJ -= 0.01 * h0min_all;
-   }
+   }   
+   
 
    // For HR tests, the energy is normalized by the number of elements.
    // const double init_energy = a.GetParGridFunctionEnergy(x) /
@@ -716,13 +722,16 @@ namespace mfem
          //             "Boundary attribute 3 must be used only for 3D meshes. "
          //             "Adjust the attributes (1/2/3/4 for fixed x/y/z/all "
          //             "components, rest for free nodes), or use -fix-bnd.");
-         // if (attr == 1 || attr == 2) { n += 2*nd; }
-         // if (attr == 3 || attr == 4) { n += 1*nd; }
-         if (attr == 1 || attr == 2 || attr == 3) { n += nd; }
-         if (attr == 4) { n += nd * dim; }
+         if (attr == 1 || attr == 2) { n += 1*nd; }
+         if (attr == 3 || attr == 4) { n += 2*nd; }
+         
+         // if (attr == 1 || attr == 2 || attr == 3 || attr == 4 ) { n += nd; }
+         // if (attr == 4) { n += nd * dim; }
+         // std::cout << attr <<std::endl;
       }
       Array<int> ess_vdofs(n);
       n = 0;
+
       for (int i = 0; i < pmesh->GetNBE(); i++)
       {
          const int nd = pfespace->GetBE(i)->GetDof();
@@ -738,11 +747,28 @@ namespace mfem
             for (int j = 0; j < nd; j++)
             { ess_vdofs[n++] = vdofs[j];}
          }
-         else if (attr == 3) // Fix y components.
+         else if (attr == 3) // Fix x and y components.
          {
-            for (int j = 0; j < nd; j++)
-            { ess_vdofs[n++] = vdofs[j+nd]; }
+            for (int j = 0; j < 2*nd; j++)
+            { ess_vdofs[n++] = vdofs[j]; }
          }
+         else if (attr == 4) // Fix x and y components.
+         {
+            for (int j = 0; j < 2*nd; j++)
+            { ess_vdofs[n++] = vdofs[j]; }
+         }
+
+         // else if (attr == 3) // Fix y components.
+         // {
+         //    for (int j = 0; j < nd; j++)
+         //    { ess_vdofs[n++] = vdofs[j+nd]; }
+         // }
+         // else if (attr == 4) // Fix y components.
+         // {
+         //    for (int j = 0; j < nd; j++)
+         //    { ess_vdofs[n++] = vdofs[j+nd]; }
+         // }
+
          // else if (attr == 4) // Fix y components.
          // {
          //    for (int j = 0; j < nd; j++)
@@ -753,11 +779,11 @@ namespace mfem
          //    for (int j = 0; j < nd; j++)
          //    { ess_vdofs[n++] = vdofs[j+2*nd]; }
          // }
-         else if (attr == 4) // Fix all components.
-         {
-            for (int j = 0; j < vdofs.Size(); j++)
-            { ess_vdofs[n++] = vdofs[j]; }
-         }
+         // else if (attr == 4) // Fix all components.
+         // {
+         //    for (int j = 0; j < vdofs.Size(); j++)
+         //    { ess_vdofs[n++] = vdofs[j]; }
+         // }
       }
 
       a.SetEssentialVDofs(ess_vdofs);
@@ -970,6 +996,7 @@ namespace mfem
    //    }
    // }
 
+   if(fdscheme){pa = true;}
    delete S;
    delete S_prec;
    delete target_c2;

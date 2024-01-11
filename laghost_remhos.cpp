@@ -136,21 +136,31 @@ void Remapping(ParMesh *pmesh, ParGridFunction &x, ParGridFunction &x_mod, ParGr
 
    int ode_solver_type = 3;
 
-   HOSolverType ho_type           = HOSolverType::CG;
-   LOSolverType lo_type           = LOSolverType::DiscrUpwindPrec;
+   HOSolverType ho_type           = HOSolverType::LocalInverse;
+   LOSolverType lo_type           = LOSolverType::DiscrUpwind;
    FCTSolverType fct_type         = FCTSolverType::FluxBased;
    MonolithicSolverType mono_type = MonolithicSolverType::None;
 
-   ho_type           = HOSolverType::CG;
-   lo_type           = LOSolverType::None;
-   fct_type          = FCTSolverType::None;
+   // HOSolverType ho_type           = HOSolverType::LocalInverse;
+   // LOSolverType lo_type           = LOSolverType::MassBased;
+   // FCTSolverType fct_type         = FCTSolverType::FluxBased;
+   // MonolithicSolverType mono_type = MonolithicSolverType::None;
+
+   // enum class HOSolverType {None, Neumann, CG, LocalInverse};
+   // enum class FCTSolverType {None, FluxBased, ClipScale,
+   //                        NonlinearPenalty, FCTProject};
+   // enum class LOSolverType {None,    DiscrUpwind,    DiscrUpwindPrec,
+   //                       ResDist, ResDistSubcell, MassBased};
+   // enum class MonolithicSolverType {None, ResDistMono, ResDistMonoSubcell};
+
+   // enum class TimeStepControl {FixedTimeStep, LOBoundsError};
 
    if(ncmesh)
    {
       if(myid==0){std::cout << "ncmesh" << std::endl;}
-      ho_type           = HOSolverType::CG;
-      lo_type           = LOSolverType::None;
-      fct_type          = FCTSolverType::None;
+      ho_type           = HOSolverType::LocalInverse;
+      lo_type           = LOSolverType::MassBased;
+      fct_type          = FCTSolverType::FluxBased;
    }
    
 
@@ -161,6 +171,7 @@ void Remapping(ParMesh *pmesh, ParGridFunction &x, ParGridFunction &x_mod, ParGr
    int smth_ind_type = 0;
    double t_final = 1.0;
    TimeStepControl dt_control = TimeStepControl::FixedTimeStep;
+   // double dt = 0.01;
    double dt = 0.005;
    bool visualization = false;
    bool visit = false;

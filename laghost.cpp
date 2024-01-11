@@ -127,7 +127,7 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
                ParGridFunction &lambda0_gf,
                ParGridFunction &mu0_gf,
                ParGridFunction &mat_gf,
-               ParLinearForm &flattening,
+               // ParLinearForm &flattening,
                int dim, bool amr);
 
 int main(int argc, char *argv[])
@@ -147,19 +147,27 @@ int main(int argc, char *argv[])
    get_input_parameters(input_parameter_file, param);
 
    Array<int> cxyz; // Leave undefined. It won't be used.
-   // double init_dt = 1e-1;
+   double init_dt = 1.0;
    double blast_energy = 0.0;
    // double v_unit = 1.0/86400/365.25;
    double v_unit = 1.0;
    // double blast_energy = 1.0e-6;
-   double blast_position[] = {0.0, 0.5, 0.0};
+   double blast_position[] = {0.0, 0.0, 0.0};
    // double blast_energy2 = 0.1;
    // double blast_position2[] = {8.0, 0.5};
    // Mesh bounding box
    Vector bb_min, bb_max;
+   double bb_center[] = {0.0, 0.0, 0.0};
+   double bb_length[] = {0.0, 0.0, 0.0};
+
+   Vector bb_min2, bb_max2;
+   double bb_center2[] = {0.0, 0.0, 0.0};
+   double bb_length2[] = {0.0, 0.0, 0.0};
+   double stretching_factor[] = {0.0, 0.0, 0.0};
 
    // Remeshing performs using the Target-Matrix Optimization Paradigm (TMOP)
    bool mesh_changed = false;
+   bool ini_lithostatic = false;
    // int  multi_comp   = 0;
    int  n_dt   = 50;
    //
@@ -171,6 +179,9 @@ int main(int argc, char *argv[])
    double alpha = 0.0;
    // double kappa = param.control.surf_diff;
    double dummy = 0.0;
+   double ave_topo_top = 0.0;
+   double ave_topo_bot = 0.0;
+   double cond_num =1.0;
 
    // Let some options be overwritten by command-line options.
    args.AddOption(&param.sim.dim, "-dim", "--dimension", "Dimension of the problem.");
@@ -257,8 +268,8 @@ int main(int argc, char *argv[])
                   "2  : 0.5|T|^2/tau-1                 -- 2D shape (condition number)\n\t"
                   "7  : |T-T^-t|^2                     -- 2D shape+size\n\t"
                   "9  : tau*|T-T^-t|^2                 -- 2D shape+size\n\t" // not applicable
-                  "14 : |T-I|^2                        -- 2D shape+size+orientation\n\t" 
-                  "22 : 0.5(|T|^2-2*tau)/(tau-tau_0)   -- 2D untangling\n\t"
+                  "14 : |T-I|^2                        -- 2D shape+size+orientation\n\t" // not applicable 
+                  "22 : 0.5(|T|^2-2*tau)/(tau-tau_0)   -- 2D untangling\n\t" // not applicable
                   "50 : 0.5|T^tT|^2/tau^2-1            -- 2D shape\n\t"
                   "55 : (tau-1)^2                      -- 2D size\n\t"
                   "56 : 0.5(sqrt(tau)-1/sqrt(tau))^2   -- 2D size\n\t"
@@ -481,6 +492,7 @@ int main(int argc, char *argv[])
 
    // Refine the mesh in serial to increase the resolution.
    for (int lev = 0; lev < param.mesh.rs_levels; lev++) { mesh->UniformRefinement(); }
+   // mesh->EnsureNCMesh(true);
 
    if(param.mesh.local_refinement)
    {
@@ -541,7 +553,7 @@ int main(int argc, char *argv[])
       cout << "Number of zones in the serial mesh: " << mesh_NE << endl;
    }
 
-   mesh->GetBoundingBox(bb_min, bb_max, max(param.mesh.order_v, 1));
+   // mesh->GetBoundingBox(bb_min, bb_max, max(param.mesh.order_v, 1));
 
    // Parallel partitioning of the mesh.
    ParMesh *pmesh = nullptr;
@@ -684,6 +696,35 @@ int main(int argc, char *argv[])
    if (myid == 0)
    { cout << "Zones min/max: " << ne_min << " " << ne_max << endl; }
 
+   pmesh->GetBoundingBox(bb_min, bb_max, max(param.mesh.order_v, 1));
+
+   if(dim == 2)
+   {
+      bb_center[0] = (bb_min[0]+bb_max[0])*0.5;
+      bb_center[1] = (bb_min[1]+bb_max[1])*0.5;
+
+      bb_length[0] = (bb_max[0]-bb_min[0]);
+      bb_length[1] = (bb_max[1]-bb_min[1]);
+
+      // if (myid == 0)
+      // { 
+      //    cout << "min " << bb_min[0] << " " << bb_min[1] << endl; 
+      //    cout << "max " << bb_max[0] << " " << bb_max[1] << endl;
+      //    cout << "center " << bb_center[0] << " " << bb_center[1] << endl;
+      //    cout << "length " << bb_length[0] << " " << bb_length[1] << endl;
+      // }
+   }
+   else
+   {
+      bb_center[0] = (bb_min[0]+bb_max[0])*0.5;
+      bb_center[1] = (bb_min[1]+bb_max[1])*0.5;
+      bb_center[2] = (bb_min[2]+bb_max[2])*0.5;
+
+      bb_length[0] = (bb_max[0]-bb_min[0]);
+      bb_length[1] = (bb_max[1]-bb_min[1]);
+      bb_length[2] = (bb_max[2]-bb_min[2]);
+   }
+   
    // Define the parallel finite element spaces. We use:
    // - H1 (Gauss-Lobatto, continuous) for position and velocity.
    // - L2 (Bernstein, discontinuous) for specific internal energy.
@@ -874,6 +915,7 @@ int main(int argc, char *argv[])
    //    explicit Runge-Kutta methods are available.
    int ode_solver_type = 12;
    ODESolver *ode_solver_sub;
+   ODESolver *ode_solver_sub2;
    switch (ode_solver_type)
    {
       // Implicit L-stable methods
@@ -890,6 +932,32 @@ int main(int argc, char *argv[])
       case 22: ode_solver_sub = new ImplicitMidpointSolver; break;
       case 23: ode_solver_sub = new SDIRK23Solver; break;
       case 24: ode_solver_sub = new SDIRK34Solver; break;
+      default:
+         if (myid == 0)
+         {
+            cout << "Unknown ODE solver type: " << ode_solver_type << '\n';
+         }
+         delete pmesh;
+         MPI_Finalize();
+         return 3;
+   }
+
+   switch (ode_solver_type)
+   {
+      // Implicit L-stable methods
+      case 1:  ode_solver_sub2 = new BackwardEulerSolver; break;
+      case 2:  ode_solver_sub2 = new SDIRK23Solver(2); break;
+      case 3:  ode_solver_sub2 = new SDIRK33Solver; break;
+      // Explicit methods
+      case 11: ode_solver_sub2 = new ForwardEulerSolver; break;
+      case 12: ode_solver_sub2 = new RK2Solver(0.5); break; // midpoint method
+      case 13: ode_solver_sub2 = new RK3SSPSolver; break;
+      case 14: ode_solver_sub2 = new RK4Solver; break;
+      case 15: ode_solver_sub2 = new GeneralizedAlphaSolver(0.5); break;
+      // Implicit A-stable methods (not L-stable)
+      case 22: ode_solver_sub2 = new ImplicitMidpointSolver; break;
+      case 23: ode_solver_sub2 = new SDIRK23Solver; break;
+      case 24: ode_solver_sub2 = new SDIRK34Solver; break;
       default:
          if (myid == 0)
          {
@@ -958,23 +1026,115 @@ int main(int argc, char *argv[])
    Array<int> boundary_dofs;
    sub_fespace1.GetBoundaryTrueDofs(boundary_dofs);
    ParGridFunction x_top(&sub_fespace0); 
-   ParGridFunction x_top_old(&sub_fespace0);
+   // ParGridFunction x_top_old(&sub_fespace0);
    ParGridFunction topo(&sub_fespace1);
    submesh.SetNodalGridFunction(&x_top);
-   submesh.SetNodalGridFunction(&x_top_old);
+   // submesh.SetNodalGridFunction(&x_top_old);
    for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
 
    Vector topo_t, topo_t_old;
    topo.GetTrueDofs(topo_t); topo_t_old=topo;
 
+   // Create a "sub mesh" from the boundary elements with attribute 2 (bottom boundary) for flattening 
+   Array<int> bdr_attrs_b(1);
+   bdr_attrs_b[0] = 3;
+   ParSubMesh submesh_bottom(ParSubMesh::CreateFromBoundary(*pmesh, bdr_attrs_b));
+   ParFiniteElementSpace sub_fespace2(&submesh_bottom, &H1FEC, pmesh->Dimension()); // nodes of submesh
+   ParFiniteElementSpace sub_fespace3(&submesh_bottom, &H1FEC); // topography
+   
+   // Solve a Poisson problem on the boundary. This just follows ex0p.
+   Array<int> boundary_dofs_bot;
+   sub_fespace2.GetBoundaryTrueDofs(boundary_dofs_bot);
+   ParGridFunction x_bottom(&sub_fespace2);
+   // ParGridFunction x_bottom_old(&sub_fespace2);
+   ParGridFunction bottom(&sub_fespace3);
+   submesh_bottom.SetNodalGridFunction(&x_bottom);
+   // submesh_bottom.SetNodalGridFunction(&x_bottom_old);
+   for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
+
+   Vector bottom_t, bottom_t_old;
+   bottom.GetTrueDofs(bottom_t); bottom_t_old=bottom;
+
+
+   // Create a "sub mesh" from the boundary elements with attribute 0
+   Array<int> bdr_attrs_x0(1);
+   bdr_attrs_x0[0] = 1;
+   ParSubMesh submesh_x0(ParSubMesh::CreateFromBoundary(*pmesh, bdr_attrs_x0));
+   ParFiniteElementSpace sub_fespace4(&submesh_x0, &H1FEC, pmesh->Dimension()); // right sidewall 
+   ParGridFunction x0_side(&sub_fespace4);
+   submesh_x0.SetNodalGridFunction(&x0_side);
+
+   // Create a "sub mesh" from the boundary elements with attribute 0
+   Array<int> bdr_attrs_x1(1);
+   bdr_attrs_x1[0] = 2;
+   ParSubMesh submesh_x1(ParSubMesh::CreateFromBoundary(*pmesh, bdr_attrs_x1));
+   ParFiniteElementSpace sub_fespace5(&submesh_x1, &H1FEC, pmesh->Dimension()); // right sidewall 
+   ParGridFunction x1_side(&sub_fespace5);
+   submesh_x1.SetNodalGridFunction(&x1_side);
+
+   // 
+   // ParGridFunction x_bottom(&sub_fespace2);
+   // ParGridFunction bottom(&sub_fespace3);
+   // submesh_bottom.SetNodalGridFunction(&x_bottom);
+   // for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
+
    // 9. Initialize the conduction operator for surface diffusion
    ConductionOperator oper_sub(sub_fespace1, alpha, param.control.surf_diff, topo_t);
+   ConductionOperator oper_sub2(sub_fespace3, alpha, param.control.flat_rate, bottom_t);
 
    // xyz coordinates in L2 space
    ParFiniteElementSpace L2FESpace_xyz(pmesh, &L2FEC, dim); //
    ParGridFunction xyz_gf_l2(&L2FESpace_xyz);
    VectorFunctionCoefficient xyz_coeff(pmesh->Dimension(), xyz0);
    xyz_gf_l2.ProjectCoefficient(xyz_coeff);
+
+   int nSize = 1, nAspr = 1, nSkew = 1;
+   if (dim == 3)
+   {
+      nAspr = 2;
+      nSkew = 3;
+   }
+
+   // Total number of geometric parameters; for now we skip orientation.
+   const int nTotalParams = nSize + nAspr + nSkew;
+
+   // Define a GridFunction for all geometric parameters associated with the
+   // mesh.
+   ParFiniteElementSpace L2FESpace_geometric(pmesh, &L2FEC, nTotalParams); // must order byNodes
+   ParGridFunction quality(&L2FESpace_geometric);
+
+   DenseMatrix jacobian(dim);
+   Vector geomParams(nTotalParams);
+   Array<int> vdofs;
+   Vector allVals;
+   // Compute the geometric parameter at the dofs of each element.
+   for (int e = 0; e < pmesh->GetNE(); e++)
+   {
+      const FiniteElement *fe = L2FESpace_geometric.GetFE(e);
+      const IntegrationRule &ir = fe->GetNodes();
+      L2FESpace_geometric.GetElementVDofs(e, vdofs);
+      allVals.SetSize(vdofs.Size());
+      for (int q = 0; q < ir.GetNPoints(); q++)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         pmesh->GetElementJacobian(e, jacobian, &ip);
+         double sizeVal;
+         Vector asprVals, skewVals, oriVals;
+         pmesh->GetGeometricParametersFromJacobian(jacobian, sizeVal,
+                                                  asprVals, skewVals, oriVals);
+         allVals(q + 0) = sizeVal;
+         for (int n = 0; n < nAspr; n++)
+         {
+            allVals(q + (n+1)*ir.GetNPoints()) = asprVals(n);
+         }
+         for (int n = 0; n < nSkew; n++)
+         {
+            allVals(q + (n+1+nAspr)*ir.GetNPoints()) = skewVals(n);
+         }
+      }
+      quality.SetSubVector(vdofs, allVals);
+   }
+   
 
    // Initialize the velocity.
    v_gf = 0.0;
@@ -1161,31 +1321,59 @@ int main(int argc, char *argv[])
    }
 
    // String (Material) extraction
-   param.mat.friction_angle.erase(std::remove(param.mat.friction_angle.begin(), param.mat.friction_angle.end(), '['), param.mat.friction_angle.end());
-   param.mat.friction_angle.erase(std::remove(param.mat.friction_angle.begin(), param.mat.friction_angle.end(), ']'), param.mat.friction_angle.end());
-   param.mat.friction_angle.erase(std::remove(param.mat.friction_angle.begin(), param.mat.friction_angle.end(), ' '), param.mat.friction_angle.end());
+   param.mat.friction_angle0.erase(std::remove(param.mat.friction_angle0.begin(), param.mat.friction_angle0.end(), '['), param.mat.friction_angle0.end());
+   param.mat.friction_angle0.erase(std::remove(param.mat.friction_angle0.begin(), param.mat.friction_angle0.end(), ']'), param.mat.friction_angle0.end());
+   param.mat.friction_angle0.erase(std::remove(param.mat.friction_angle0.begin(), param.mat.friction_angle0.end(), ' '), param.mat.friction_angle0.end());
 
    // Create a stringstream to tokenize the string
-   std::stringstream ss8(param.mat.friction_angle);
-   std::vector<double> friction_angle_vec;
+   std::stringstream ss8(param.mat.friction_angle0);
+   std::vector<double> friction_angle0_vec;
     
    // Tokenize the string and convert tokens to integers
    while (getline(ss8, token, ',')) 
-   {friction_angle_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   {friction_angle0_vec.push_back(std::stod(token)); // Convert string to int and add to vector
    }
 
    // String (Material) extraction
-   param.mat.dilation_angle.erase(std::remove(param.mat.dilation_angle.begin(), param.mat.dilation_angle.end(), '['), param.mat.dilation_angle.end());
-   param.mat.dilation_angle.erase(std::remove(param.mat.dilation_angle.begin(), param.mat.dilation_angle.end(), ']'), param.mat.dilation_angle.end());
-   param.mat.dilation_angle.erase(std::remove(param.mat.dilation_angle.begin(), param.mat.dilation_angle.end(), ' '), param.mat.dilation_angle.end());
+   param.mat.friction_angle1.erase(std::remove(param.mat.friction_angle1.begin(), param.mat.friction_angle1.end(), '['), param.mat.friction_angle1.end());
+   param.mat.friction_angle1.erase(std::remove(param.mat.friction_angle1.begin(), param.mat.friction_angle1.end(), ']'), param.mat.friction_angle1.end());
+   param.mat.friction_angle1.erase(std::remove(param.mat.friction_angle1.begin(), param.mat.friction_angle1.end(), ' '), param.mat.friction_angle1.end());
 
    // Create a stringstream to tokenize the string
-   std::stringstream ss9(param.mat.dilation_angle);
-   std::vector<double> dilation_angle_vec;
+   std::stringstream ss81(param.mat.friction_angle1);
+   std::vector<double> friction_angle1_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss81, token, ',')) 
+   {friction_angle1_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.dilation_angle0.erase(std::remove(param.mat.dilation_angle0.begin(), param.mat.dilation_angle0.end(), '['), param.mat.dilation_angle0.end());
+   param.mat.dilation_angle0.erase(std::remove(param.mat.dilation_angle0.begin(), param.mat.dilation_angle0.end(), ']'), param.mat.dilation_angle0.end());
+   param.mat.dilation_angle0.erase(std::remove(param.mat.dilation_angle0.begin(), param.mat.dilation_angle0.end(), ' '), param.mat.dilation_angle0.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss9(param.mat.dilation_angle0);
+   std::vector<double> dilation_angle0_vec;
     
    // Tokenize the string and convert tokens to integers
    while (getline(ss9, token, ',')) 
-   {dilation_angle_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   {dilation_angle0_vec.push_back(std::stod(token)); // Convert string to int and add to vector
+   }
+
+   // String (Material) extraction
+   param.mat.dilation_angle1.erase(std::remove(param.mat.dilation_angle1.begin(), param.mat.dilation_angle1.end(), '['), param.mat.dilation_angle1.end());
+   param.mat.dilation_angle1.erase(std::remove(param.mat.dilation_angle1.begin(), param.mat.dilation_angle1.end(), ']'), param.mat.dilation_angle1.end());
+   param.mat.dilation_angle1.erase(std::remove(param.mat.dilation_angle1.begin(), param.mat.dilation_angle1.end(), ' '), param.mat.dilation_angle1.end());
+
+   // Create a stringstream to tokenize the string
+   std::stringstream ss91(param.mat.dilation_angle1);
+   std::vector<double> dilation_angle1_vec;
+    
+   // Tokenize the string and convert tokens to integers
+   while (getline(ss91, token, ',')) 
+   {dilation_angle1_vec.push_back(std::stod(token)); // Convert string to int and add to vector
    }
 
    // String (Material) extraction
@@ -1239,17 +1427,6 @@ int main(int argc, char *argv[])
    Vector z_rho(pmesh->attributes.Max());
    Vector s_rho(pmesh->attributes.Max());
 
-   // std::cout << "rho, " << rho_vec[0] << std::endl;
-   // std::cout << "lambda, " << lambda_vec[0] << std::endl;
-   // std::cout << "mu, " << mu_vec[0] << std::endl;
-   // std::cout << "tension_cutoff, " << tension_cutoff_vec[0] << std::endl;
-   // std::cout << "cohesion0, " << cohesion0_vec[0] << std::endl;
-   // std::cout << "cohesion1, " << cohesion1_vec[0] << std::endl;
-   // std::cout << "friction_angle, " << friction_angle_vec[0] << std::endl;
-   // std::cout << "dilation_angle, " << dilation_angle_vec[0] << std::endl;
-   // std::cout << "pls0, " << pls0_vec[0] << std::endl;
-   // std::cout << "pls1, " << pls1_vec[0] << std::endl;
-
    if(rho_vec.size() == 1) {z_rho =rho_vec[0]; s_rho =rho_vec[0] * param.control.mscale;}
    else if(rho_vec.size() != pmesh->attributes.Max())
    {
@@ -1296,7 +1473,7 @@ int main(int argc, char *argv[])
       l2_e.ProjectCoefficient(e_coeff);
    }
    e_gf.ProjectGridFunction(l2_e);
-   e_gf = 0;
+   // e_gf = 0;
    // Sync the data location of e_gf with its base, S
    e_gf.SyncAliasMemory(S);
 
@@ -1354,22 +1531,30 @@ int main(int argc, char *argv[])
    ParGridFunction mat_gf(&mat_fes);
    mat_gf.ProjectCoefficient(mat_func);
 
+   // Composition
+   ParFiniteElementSpace L2FESpace_mat(pmesh, &L2FEC, pmesh->attributes.Max()); // material composition 
+   ParGridFunction comp_gf(&L2FESpace_mat);
+   comp_gf = 0.0;
+
+   for (int i = 0; i < pmesh->attributes.Max(); i++)
+   {
+      for (int j = 0; j < e_gf.Size(); j++)
+      {
+         if(mat_gf[j] == i){comp_gf[j+e_gf.Size()*i] = 1.0;}
+      }
+   }
+
    // Material properties of Plasticity
    Vector tension_cutoff(pmesh->attributes.Max());
    Vector cohesion0(pmesh->attributes.Max());
    Vector cohesion1(pmesh->attributes.Max());
-   Vector friction_angle(pmesh->attributes.Max());
-   Vector dilation_angle(pmesh->attributes.Max());
+   Vector friction_angle0(pmesh->attributes.Max());
+   Vector friction_angle1(pmesh->attributes.Max());
+   Vector dilation_angle0(pmesh->attributes.Max());
+   Vector dilation_angle1(pmesh->attributes.Max());
    Vector plastic_viscosity(pmesh->attributes.Max());
    Vector pls0(pmesh->attributes.Max());
    Vector pls1(pmesh->attributes.Max());
-   // tension_cutoff = param.mat.tension_cutoff;
-   // cohesion0 = param.mat.cohesion0;
-   // cohesion1 = param.mat.cohesion1;
-   // friction_angle = param.mat.friction_angle;
-   // dilation_angle = param.mat.dilation_angle;
-   // pls0 = param.mat.pls0;
-   // pls1 = param.mat.pls1;
 
    if(tension_cutoff_vec.size() == 1) {tension_cutoff =tension_cutoff_vec[0];}
    else if(tension_cutoff_vec.size() != pmesh->attributes.Max())
@@ -1401,25 +1586,45 @@ int main(int argc, char *argv[])
    }
    else {for (int i = 0; i < pmesh->attributes.Max(); i++) {cohesion1[i] = cohesion1_vec[i];}}
 
-   if(friction_angle_vec.size() == 1) {friction_angle =friction_angle_vec[0];}
-   else if(friction_angle_vec.size() != pmesh->attributes.Max())
+   if(friction_angle0_vec.size() == 1) {friction_angle0 =friction_angle0_vec[0];}
+   else if(friction_angle0_vec.size() != pmesh->attributes.Max())
    {
-      if (myid == 0){cout << "The number of friction_angle are not consistent with material ID in the given mesh." << endl; }        
+      if (myid == 0){cout << "The number of friction_angle0 are not consistent with material ID in the given mesh." << endl; }        
       delete pmesh;
       MPI_Finalize();
       return 3;
    }
-   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {friction_angle[i] = friction_angle_vec[i];}}
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {friction_angle0[i] = friction_angle0_vec[i];}}
 
-   if(dilation_angle_vec.size() == 1) {dilation_angle =dilation_angle_vec[0];}
-   else if(dilation_angle_vec.size() != pmesh->attributes.Max())
+   if(friction_angle1_vec.size() == 1) {friction_angle1 =friction_angle1_vec[0];}
+   else if(friction_angle1_vec.size() != pmesh->attributes.Max())
    {
-      if (myid == 0){cout << "The number of dilation_angle are not consistent with material ID in the given mesh." << endl; }        
+      if (myid == 0){cout << "The number of friction_angle1 are not consistent with material ID in the given mesh." << endl; }        
       delete pmesh;
       MPI_Finalize();
       return 3;
    }
-   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {dilation_angle[i] = dilation_angle_vec[i];}}
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {friction_angle1[i] = friction_angle1_vec[i];}}
+
+   if(dilation_angle0_vec.size() == 1) {dilation_angle0 =dilation_angle0_vec[0];}
+   else if(dilation_angle0_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of dilation_angle0 are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {dilation_angle0[i] = dilation_angle0_vec[i];}}
+
+   if(dilation_angle1_vec.size() == 1) {dilation_angle1 =dilation_angle1_vec[0];}
+   else if(dilation_angle1_vec.size() != pmesh->attributes.Max())
+   {
+      if (myid == 0){cout << "The number of dilation_angle1 are not consistent with material ID in the given mesh." << endl; }        
+      delete pmesh;
+      MPI_Finalize();
+      return 3;
+   }
+   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {dilation_angle1[i] = dilation_angle1_vec[i];}}
 
    if(pls0_vec.size() == 1) {pls0 =pls0_vec[0];}
    else if(pls0_vec.size() != pmesh->attributes.Max())
@@ -1461,11 +1666,12 @@ int main(int argc, char *argv[])
    
    // lithostatic pressure
    s_gf=0.0;
+   ATMCoefficient ATM_coeff(dim, xyz_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
+   s_gf.ProjectCoefficient(ATM_coeff);
 
    if(param.control.lithostatic)
    {
       LithostaticCoefficient Lithostatic_coeff(dim, xyz_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
-      // LithostaticCoefficient Lithostatic_coeff(dim, y_gf_l2, z_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
       s_gf.ProjectCoefficient(Lithostatic_coeff);
    }   
 
@@ -1509,23 +1715,66 @@ int main(int argc, char *argv[])
    ParGridFunction u_gf(&H1FESpace);  // Displacment
    u_gf = 0.0;
 
-   
-   // Flattening node
-   ParLinearForm flattening(&H1FESpace); 
-   Array<int> nbc_bdr(pmesh->bdr_attributes.Max());   
-   nbc_bdr = 0; nbc_bdr[2] = 1; // bottome boundary
-   VectorArrayCoefficient bottom_node(dim);
-   for (int i = 0; i < dim-1; i++)
-   {
-     bottom_node.Set(i, new ConstantCoefficient(0.0));
-   }
 
-   Vector bottom_node_id(pmesh->bdr_attributes.Max());
-   bottom_node_id = 0.0;
-   bottom_node_id(2) = 1.0;
-   bottom_node.Set(dim-1, new PWConstCoefficient(bottom_node_id));
-   flattening.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(bottom_node), nbc_bdr);
-   flattening.Assemble();
+   // // The numerical sandbox case
+   // if (param.tmop.tmop)
+   // {
+   //    ParGridFunction x_mod_gf(&H1FESpace); 
+   //    // Store source mesh positions.
+   //    ParMesh *pmesh_copy =  new ParMesh(*pmesh);
+   //    x_mod_gf = x_gf;
+            
+   //    if(myid == 0){cout << "First Remeshing " << endl;}
+   //    HR_adaptivity(pmesh_copy, x_mod_gf, ess_tdofs, myid, param.tmop.mesh_poly_deg, param.mesh.rs_levels, param.mesh.rp_levels, param.tmop.jitter, param.tmop.metric_id, param.tmop.target_id,\
+   //                   param.tmop.lim_const, param.tmop.adapt_lim_const, param.tmop.quad_type, param.tmop.quad_order, param.tmop.solver_type, param.tmop.solver_iter, param.tmop.solver_rtol, \
+   //                   param.tmop.solver_art_type, param.tmop.lin_solver, param.tmop.max_lin_iter, param.tmop.move_bnd, param.tmop.combomet, param.tmop.bal_expl_combo, param.tmop.hradaptivity, \
+   //                   param.tmop.h_metric_id, param.tmop.normalization, param.tmop.verbosity_level, param.tmop.fdscheme, param.tmop.adapt_eval, param.tmop.exactaction, param.solver.p_assembly, \
+   //                   param.tmop.n_hr_iter, param.tmop.n_h_iter, param.tmop.mesh_node_ordering, param.tmop.barrier_type, param.tmop.worst_case_type);
+
+      
+   //    x_gf = *pmesh_copy->GetNodes();  x_gf *= param.tmop.ale; x_gf.Add(1.0 - param.tmop.ale, x_old_gf);
+   //    pmesh->NewNodes(x_gf, false); 
+   //    delete pmesh_copy;
+
+   //    xyz_gf_l2.ProjectCoefficient(xyz_coeff);
+
+   //    if(param.control.lithostatic)
+   //    {
+   //       LithostaticCoefficient Lithostatic_coeff(dim, xyz_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
+   //       s_gf.ProjectCoefficient(Lithostatic_coeff);
+   //    }
+
+   //    CompoCoefficient comp_coeff(dim, xyz_gf_l2, param.control.thickness);
+   //    comp_gf.ProjectCoefficient(comp_coeff);
+   //    rho0_gf = 0.0; lambda0_gf = 0.0; mu0_gf = 0.0;
+
+   //    for(int j = 0; j < rho0_gf.Size(); j++ )
+   //    {
+   //       for (int i = 0; i < pmesh->attributes.Max(); i++)
+   //       {
+   //          rho0_gf[j] = rho0_gf[j] + z_rho[i]*comp_gf[j+rho0_gf.Size()*i];
+   //          lambda0_gf[j] = lambda0_gf[j] + lambda[i]*comp_gf[j+rho0_gf.Size()*i];
+   //          mu0_gf[j] = mu0_gf[j] + mu[i]*comp_gf[j+rho0_gf.Size()*i];
+   //       }
+   //    }
+   // }
+
+   // // Flattening node
+   // ParLinearForm flattening(&H1FESpace); 
+   // Array<int> nbc_bdr(pmesh->bdr_attributes.Max());   
+   // nbc_bdr = 0; nbc_bdr[2] = 1; // bottome boundary
+   // VectorArrayCoefficient bottom_node(dim);
+   // for (int i = 0; i < dim-1; i++)
+   // {
+   //   bottom_node.Set(i, new ConstantCoefficient(0.0));
+   // }
+
+   // Vector bottom_node_id(pmesh->bdr_attributes.Max());
+   // bottom_node_id = 0.0;
+   // bottom_node_id(2) = 1.0;
+   // bottom_node.Set(dim-1, new PWConstCoefficient(bottom_node_id));
+   // flattening.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(bottom_node), nbc_bdr);
+   // flattening.Assemble();
 
    // L2_FECollection mat_fec(0, pmesh->Dimension());
    // ParFiniteElementSpace mat_fes(pmesh, &mat_fec);
@@ -1606,6 +1855,10 @@ int main(int argc, char *argv[])
       visit_dc.RegisterField("Stress", &s_gf);
       visit_dc.RegisterField("Plastic Strain", &p_gf);
       visit_dc.RegisterField("Non-inital Plastic Strain", &n_p_gf);
+      visit_dc.RegisterField("Geometric Parameters", &quality);
+      visit_dc.RegisterField("Composition", &comp_gf);
+      visit_dc.RegisterField("Lambda", &lambda0_gf);
+      visit_dc.RegisterField("Mu", &mu0_gf);
       visit_dc.SetCycle(0);
       visit_dc.SetTime(0.0);
       visit_dc.Save();
@@ -1624,6 +1877,10 @@ int main(int argc, char *argv[])
       pd->RegisterField("Plastic Strain", &p_gf);
       pd->RegisterField("inital Plastic Strain", &ini_p_gf);
       pd->RegisterField("Non-inital Plastic Strain", &n_p_gf);
+      pd->RegisterField("Geometric Parameters", &quality);
+      pd->RegisterField("Composition", &comp_gf);
+      pd->RegisterField("Lambda", &lambda0_gf);
+      pd->RegisterField("Mu", &mu0_gf);
       pd->SetLevelsOfDetail(param.mesh.order_v);
       pd->SetDataFormat(VTKFormat::BINARY);
       // pd->SetDataFormat(VTKFormat::ASCII);
@@ -1641,7 +1898,7 @@ int main(int argc, char *argv[])
    double t = 0.0, dt = 0.0, t_old, dt_old = 0.0, h_min_ini = 1.0, h_min = 1.0;
    dt = geo.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
    h_min = geo.GetLengthEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
-   // dt = init_dt;
+   dt = init_dt;
    bool last_step = false;
    int steps = 0;
    BlockVector S_old(S);
@@ -1650,7 +1907,7 @@ int main(int argc, char *argv[])
 
    // 10. Perform time-integration (looping over the time iterations, ti, with a
    //     time-step dt).
-   ode_solver_sub->Init(oper_sub);
+   ode_solver_sub->Init(oper_sub); ode_solver_sub2->Init(oper_sub2);
 
    //   const double internal_energy = geo.InternalEnergy(e_gf);
    //   const double kinetic_energy = geo.KineticEnergy(v_gf);
@@ -1725,7 +1982,7 @@ int main(int argc, char *argv[])
       if(param.mat.plastic)
       {
          // std::cout << dim << std::endl;
-         Returnmapping (s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle, dilation_angle, plastic_viscosity, dt_old);
+         Returnmapping (comp_gf, s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle0, friction_angle1, dilation_angle0, dilation_angle1, plastic_viscosity, dt_old);
          n_p_gf  = ini_p_gf;
          n_p_gf -= p_gf;
          n_p_gf.Neg();
@@ -1733,64 +1990,330 @@ int main(int argc, char *argv[])
 
       if (param.tmop.tmop)
       {
-         if((ti % param.tmop.remesh_steps) == 0 || (dt / itime) < param.tmop.time_reduction)
+
+         if((ti % param.tmop.remesh_steps) == 0 || cond_num > param.tmop.time_reduction)
          {
             if(myid == 0)
             {
                if ((ti % param.tmop.remesh_steps) == 0){cout << "*** calling remeshing due to constant remeshing step " << param.tmop.remesh_steps << endl;}
-               else if ((dt / itime) < param.tmop.time_reduction){cout << "*** calling remeshing due to time reduction of " << param.tmop.time_reduction << endl;}
+               else if (cond_num > param.tmop.time_reduction){cout << "*** calling remeshing due to aspect ratio is greater than " << param.tmop.time_reduction << endl;}
             }
 
-            ParGridFunction x_mod_gf(&H1FESpace); 
+            // param.tmop.time_reduction = param.tmop.time_reduction + 0.25;
+
+            ParGridFunction x_mod_gf(&H1FESpace); ParGridFunction x_mod2_gf(&H1FESpace);
+
+            // ParGridFunction x_mod2_gf(&H1FESpace); 
 
             // Store source mesh positions.
             ParMesh *pmesh_copy =  new ParMesh(*pmesh);
+            ParMesh *pmesh_copy_old =  new ParMesh(*pmesh);
             ParMesh *pmesh_old  =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old1 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old2 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old3 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old4 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old5 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old6 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old7 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old8 =  new ParMesh(*pmesh);
-            ParMesh *pmesh_old9 =  new ParMesh(*pmesh);
 
             x_old_gf = *pmesh->GetNodes();
-            x_mod_gf = *pmesh->GetNodes();
-            
-            if(param.control.winkler_foundation & param.control.winkler_flat)
+            x_mod_gf = x_ini_gf;
+
+            pmesh->GetBoundingBox(bb_min2, bb_max2, max(param.mesh.order_v, 1));
+            if(dim == 2)
             {
-               if(myid == 0)
-               {
-                  cout << "*** flattening " << endl;
-               }
+               bb_center2[0] = (bb_min2[0]+bb_max2[0])*0.5;
+               bb_center2[1] = (bb_min2[1]+bb_max2[1])*0.5;
+               bb_length2[0] = (bb_max2[0]-bb_min2[0]); // x width
+               bb_length2[1] = (bb_max2[1]-bb_min2[1]); // y height
+               stretching_factor[0] = bb_length2[0]/bb_length[0];
+               stretching_factor[1] = bb_length2[1]/bb_length[1];
 
-               for( int i = 0; i < x_gf.Size(); i++ )
-               {
-                  if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i]; x_old_gf[i] = x_ini_gf[i];}
+                  if (myid == 0)
+                  { 
+                     cout << "streching factor x: " << stretching_factor[0] << ", streching factor y:" << stretching_factor[1] << endl; 
+                  }
+            }
+            else
+            {
+               bb_center2[0] = (bb_min2[0]+bb_max2[0])*0.5;
+               bb_center2[1] = (bb_min2[1]+bb_max2[1])*0.5;
+               bb_center2[2] = (bb_min2[2]+bb_max2[2])*0.5;
+               bb_length2[0] = (bb_max2[0]-bb_min2[0]); // x width
+               bb_length2[1] = (bb_max2[1]-bb_min2[1]); // y width
+               bb_length2[2] = (bb_max2[2]-bb_min2[2]); // z height
+               stretching_factor[0] = bb_length2[0]/bb_length[0];
+               stretching_factor[1] = bb_length2[1]/bb_length[1];
+               stretching_factor[2] = bb_length2[2]/bb_length[2];
+            }
 
+            for( int i = 0; i < x_mod_gf.Size()/dim; i++ )
+            {
+               if(dim == 2)
+               {
+                  x_mod_gf[i] = (x_mod_gf[i] - bb_center[0])*stretching_factor[0] + bb_center2[0];
+                  x_mod_gf[i + x_mod_gf.Size()/dim] = (x_mod_gf[i + x_mod_gf.Size()/dim] - bb_center[1])*stretching_factor[1] + bb_center2[1];
+               }  
+               else
+               {
+                  x_mod_gf[i] = (x_mod_gf[i] - bb_center[0])*stretching_factor[0] + bb_center2[0];
+                  x_mod_gf[i + x_mod_gf.Size()/dim] = (x_mod_gf[i + x_mod_gf.Size()/dim] - bb_center[1])*stretching_factor[1] + bb_center2[1];
+                  x_mod_gf[i + 2*x_mod_gf.Size()/dim] = (x_mod_gf[i + 2*x_mod_gf.Size()/dim] - bb_center[2])*stretching_factor[2] + bb_center2[2];
                }
             }
 
             ti = ti-1;
-
             if (param.sim.visit)
             {
                   visit_dc.SetCycle(ti);
-                  visit_dc.SetTime(t*0.999);
+                  visit_dc.SetTime(t*0.9999);
                   visit_dc.Save();
             }
 
             if (param.sim.paraview)
             {
                   pd->SetCycle(ti);
-                  pd->SetTime(t*0.999);
+                  pd->SetTime(t*0.9999);
                   pd->Save();
             }
 
             ti = ti+1;
 
+            x_mod2_gf = x_mod_gf; // store streched initial mesh
+
+            // Calculating thickness of side walls of current mesh and streched mesh to adujust node postion of stresched mesh.
+            ParSubMesh::Transfer(x_gf, x0_side);
+            ParSubMesh::Transfer(x_gf, x1_side); 
+
+            Vector x0(x0_side.Size());  
+            Vector x1(x1_side.Size());  
+            double local_min_x0{0.0}, local_max_x0{0.0};
+            double local_min_x1{0.0}, local_max_x1{0.0};
+            double global_min_x0, global_max_x0;
+            double global_min_x1, global_max_x1;
+            for (int i = 0; i < x0_side.Size()/dim; i++)
+            {
+               if(dim ==2)
+               {
+                  local_min_x0 = std::min(local_min_x0, x0_side[i+1*x0_side.Size()/dim]);
+                  local_max_x0 = std::max(local_max_x0, x0_side[i+1*x0_side.Size()/dim]);
+               }
+               else
+               {
+                  local_min_x0 = std::min(local_min_x0, x0_side[i+2*x0_side.Size()/dim]);
+                  local_max_x0 = std::max(local_max_x0, x0_side[i+2*x0_side.Size()/dim]);
+               }
+            }
+
+            for (int i = 0; i < x1_side.Size()/dim; i++)
+            {
+               if(dim ==2)
+               {
+                  local_min_x1 = std::min(local_min_x1, x1_side[i+1*x1_side.Size()/dim]);
+                  local_max_x1 = std::max(local_max_x1, x1_side[i+1*x1_side.Size()/dim]);
+               }
+               else
+               {
+                  local_min_x1 = std::min(local_min_x1, x1_side[i+2*x1_side.Size()/dim]);
+                  local_max_x1 = std::max(local_max_x1, x1_side[i+2*x1_side.Size()/dim]);
+               }
+            }
+
+            MPI_Reduce(&local_min_x0, &global_min_x0, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_min_x0, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_max_x0, &global_max_x0, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_max_x0, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_min_x1, &global_min_x1, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_min_x1, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_max_x1, &global_max_x1, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_max_x1, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+
+            double x0_thickness = global_max_x0 - global_min_x0;
+            double x1_thickness = global_max_x1 - global_min_x1;
+
+            ParSubMesh::Transfer(x_mod2_gf, x0_side);
+            ParSubMesh::Transfer(x_mod2_gf, x1_side);
+
+            for (int i = 0; i < x0_side.Size()/dim; i++)
+            {
+               if(dim ==2)
+               {
+                  local_min_x0 = std::min(local_min_x0, x0_side[i+1*x0_side.Size()/dim]);
+                  local_max_x0 = std::max(local_max_x0, x0_side[i+1*x0_side.Size()/dim]);
+               }
+               else
+               {
+                  local_min_x0 = std::min(local_min_x0, x0_side[i+2*x0_side.Size()/dim]);
+                  local_max_x0 = std::max(local_max_x0, x0_side[i+2*x0_side.Size()/dim]);
+               }
+            }
+
+            for (int i = 0; i < x1_side.Size()/dim; i++)
+            {
+               if(dim ==2)
+               {
+                  local_min_x1 = std::min(local_min_x1, x1_side[i+1*x1_side.Size()/dim]);
+                  local_max_x1 = std::max(local_max_x1, x1_side[i+1*x1_side.Size()/dim]);
+               }
+               else
+               {
+                  local_min_x1 = std::min(local_min_x1, x1_side[i+2*x1_side.Size()/dim]);
+                  local_max_x1 = std::max(local_max_x1, x1_side[i+2*x1_side.Size()/dim]);
+               }
+            }
+
+            MPI_Reduce(&local_min_x0, &global_min_x0, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_min_x0, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_max_x0, &global_max_x0, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_max_x0, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_min_x1, &global_min_x1, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_min_x1, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_max_x1, &global_max_x1, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_max_x1, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+
+            double x0_ini_thickness = global_max_x0 - global_min_x0;
+            double x1_ini_thickness = global_max_x1 - global_min_x1;
+
+            // // 11. Save the displaced mesh, the velocity and elastic energy.
+            // {
+            //    ostringstream mesh_name;
+            //    mesh_name << "deformed." << setfill('0') << setw(6) << myid;
+            //    ofstream mesh_ofs(mesh_name.str().c_str());
+            //    mesh_ofs.precision(8);
+            //    pmesh->Print(mesh_ofs);
+            // }
+
+            /*
+            if(param.tmop.move_bnd)
+            {
+               x_gf = x_old_gf;
+               // Projecting top and bottom boundaries on flat surface
+               ParSubMesh::Transfer(x_gf, x_top); // update current mesh to submesh
+               for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
+
+               double local_max_top = topo.Max();
+               double global_max_top;
+               MPI_Reduce(&local_max_top, &global_max_top, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+               MPI_Bcast(&global_max_top, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+               for (int i = 0; i < topo.Size(); i++){x_top[i+topo.Size()] = global_max_top;}
+               submesh.NewNodes(x_top, false);
+               ParSubMesh::Transfer(x_top, x_gf);
+
+
+               ParSubMesh::Transfer(x_gf, x_bottom); // update current mesh to submesh
+               for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
+
+               double local_min_bot = bottom.Min();
+               double global_min_bot;
+               MPI_Reduce(&local_min_bot, &global_min_bot, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+               MPI_Bcast(&global_min_bot, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+               bottom_t_old=bottom;
+
+               if(param.control.winkler_foundation & param.control.winkler_flat)
+               {
+                  for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = global_min_bot;}
+                  submesh_bottom.NewNodes(x_bottom, false);
+                  ParSubMesh::Transfer(x_bottom, x_gf);
+               }
+            }
+            */
+
+            double global_max_top = bb_max2[1];
+            double global_min_bot = bb_min2[1];
+
+            {
+               
+               // Projecting top and bottom boundaries on flat surface
+               ParSubMesh::Transfer(x_mod_gf, x_top); // update current mesh to submesh
+               // for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
+               // double local_max_top = topo.Max();
+               // double global_max_top;
+               // MPI_Reduce(&local_max_top, &global_max_top, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+               // MPI_Bcast(&global_max_top, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+               for (int i = 0; i < topo.Size(); i++){x_top[i+topo.Size()] = global_max_top;}
+               ParSubMesh::Transfer(x_top, x_mod_gf);
+
+
+               ParSubMesh::Transfer(x_mod_gf, x_bottom); // update current mesh to submesh
+               // for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
+               // double local_min_bot = bottom.Min();
+               // double global_min_bot;
+               // MPI_Reduce(&local_min_bot, &global_min_bot, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+               // MPI_Bcast(&global_min_bot, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+               // bottom_t_old=bottom;
+
+               if(param.control.winkler_foundation & param.control.winkler_flat)
+               {
+                  for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = global_min_bot;}
+                  ParSubMesh::Transfer(x_bottom, x_mod_gf);
+               }
+            }
+            
+            {
+               x_gf = x_old_gf;
+               // Projecting top and bottom boundaries on flat surface
+               ParSubMesh::Transfer(x_gf, x_top); // update current mesh to submesh
+               // for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
+               // double local_max_top = topo.Max();
+               // double global_max_top;
+               // MPI_Reduce(&local_max_top, &global_max_top, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+               // MPI_Bcast(&global_max_top, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+               for (int i = 0; i < topo.Size(); i++){x_top[i+topo.Size()] = global_max_top;}
+               ParSubMesh::Transfer(x_top, x_gf);
+
+
+               ParSubMesh::Transfer(x_gf, x_bottom); // update current mesh to submesh
+               // for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
+               // double local_min_bot = bottom.Min();
+               // double global_min_bot;
+               // MPI_Reduce(&local_min_bot, &global_min_bot, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+               // MPI_Bcast(&global_min_bot, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+               // bottom_t_old=bottom;
+
+               if(param.control.winkler_foundation & param.control.winkler_flat)
+               {
+                  for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = global_min_bot;}
+                  ParSubMesh::Transfer(x_bottom, x_gf);
+               }
+            }
+
+            pmesh_copy->NewNodes(x_mod_gf, false); // Deformined mesh for H1 interpolation 
+            pmesh_copy_old->NewNodes(x_gf, false); // 
+
+        
+            Vector vxyz;
+            int point_ordering;
+            vxyz = *pmesh_copy->GetNodes(); // from target mesh
+            point_ordering = pmesh_copy->GetNodes()->FESpace()->GetOrdering();
+            FindPointsGSLIB finder(MPI_COMM_WORLD);
+            finder.Setup(*pmesh_copy_old); // source mesh
+            Vector interp_vals(x_gf.Size());               
+            finder.Interpolate(vxyz, x_old_gf, interp_vals, point_ordering);
+            x_mod_gf = interp_vals; 
+            
+            x_gf = x_old_gf; // back to original gridfunction
+            // Adjusting nodes on side walls based on original mesh. 
+            ParSubMesh::Transfer(x_mod2_gf, x0_side);
+            ParSubMesh::Transfer(x_mod2_gf, x1_side);
+            if(dim == 2)
+            {
+               for (int i = 0; i < x0_side.Size()/dim; i++){x0_side[i+x0_side.Size()/dim] = x0_thickness*x0_side[i+1*x0_side.Size()/dim]/x0_ini_thickness;}
+               for (int i = 0; i < x1_side.Size()/dim; i++){x1_side[i+x1_side.Size()/dim] = x1_thickness*x1_side[i+1*x1_side.Size()/dim]/x1_ini_thickness;}
+            }
+            else
+            {
+               for (int i = 0; i < x0_side.Size()/dim; i++){x0_side[i+x0_side.Size()/dim] = x0_thickness*x0_side[i+2*x0_side.Size()/dim]/x0_ini_thickness;}
+               for (int i = 0; i < x1_side.Size()/dim; i++){x1_side[i+x1_side.Size()/dim] = x1_thickness*x1_side[i+2*x1_side.Size()/dim]/x1_ini_thickness;}
+            }
+            ParSubMesh::Transfer(x0_side, x_gf);
+            ParSubMesh::Transfer(x1_side, x_gf); 
+
+            ParSubMesh::Transfer(x_mod_gf, x_top); 
+            ParSubMesh::Transfer(x_mod_gf, x_bottom);  
+            ParSubMesh::Transfer(x_top, x_gf);
+            ParSubMesh::Transfer(x_bottom, x_gf);
+
+                     
+            pmesh_copy->NewNodes(x_gf, false);
+
+            // param.tmop.move_bnd = false;
+            if(myid == 0){cout << "First Remeshing " << endl;}
             HR_adaptivity(pmesh_copy, x_mod_gf, ess_tdofs, myid, param.tmop.mesh_poly_deg, param.mesh.rs_levels, param.mesh.rp_levels, param.tmop.jitter, param.tmop.metric_id, param.tmop.target_id,\
                            param.tmop.lim_const, param.tmop.adapt_lim_const, param.tmop.quad_type, param.tmop.quad_order, param.tmop.solver_type, param.tmop.solver_iter, param.tmop.solver_rtol, \
                            param.tmop.solver_art_type, param.tmop.lin_solver, param.tmop.max_lin_iter, param.tmop.move_bnd, param.tmop.combomet, param.tmop.bal_expl_combo, param.tmop.hradaptivity, \
@@ -1799,199 +2322,222 @@ int main(int argc, char *argv[])
 
             mesh_changed = true;
 
-
-            x_gf = x_mod_gf; x_gf *= param.tmop.ale;
-            x_gf.Add(1.0 - param.tmop.ale, x_old_gf);
-
-            // L2 target xyz after remeshing
-            // x_gf += 1.0; // test for translation
-            xyz_gf_l2.ProjectCoefficient(xyz_coeff);
-            pmesh_copy->NewNodes(x_gf, false); // Deformined mesh for H1 interpolation 
-
+            /*
+            if(param.tmop.move_bnd)
             {
+               // x_gf = x_mod_gf; 
+               // // Projecting top and bottom boundaries on original height
+               // ParSubMesh::Transfer(x_gf, x_top); // update current mesh to submesh
+               // for (int i = 0; i < topo.Size(); i++){x_top[i+topo.Size()] = topo_t_old[i];}
+               // submesh.NewNodes(x_top, false);
+               // ParSubMesh::Transfer(x_top, x_mod_gf);
+
+               // ParSubMesh::Transfer(x_gf, x_bottom); // update current mesh to submesh
+               // for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = bottom_t_old[i];}
+               // submesh_bottom.NewNodes(x_bottom, false);
+               // ParSubMesh::Transfer(x_bottom, x_mod_gf);
+               // pmesh_copy->NewNodes(x_mod_gf, false); // Deformined mesh for H1 interpolation 
+
+               // Check y coordinates
+               // ParSubMesh::Transfer(x_mod_gf, x_top);
+               // for (int i = 0; i < topo.Size(); i++){std::cout << i << ", "<< x_top[i+topo.Size()] << std::endl;}
+
+               Vector vxyz;
+               int point_ordering;
+               // vxyz = *pmesh_copy_old->GetNodes(); // from target mesh
+               vxyz = *pmesh_copy->GetNodes(); // from target mesh
+               // point_ordering = pmesh_copy_old->GetNodes()->FESpace()->GetOrdering();
+               point_ordering = pmesh_copy->GetNodes()->FESpace()->GetOrdering();
+               FindPointsGSLIB finder(MPI_COMM_WORLD);
+               // finder.Setup(*pmesh_copy); // source mesh
+               finder.Setup(*pmesh_copy_old); // source mesh
+               Vector interp_vals(x_gf.Size());               
+               finder.Interpolate(vxyz, x_old_gf, interp_vals, point_ordering);
+               x_mod_gf = interp_vals; 
+               x_gf = x_old_gf; // back to original gridfunction
+
+               // 
+               ParSubMesh::Transfer(x_mod_gf, x_top); 
+               ParSubMesh::Transfer(x_mod_gf, x_bottom);
+               ParSubMesh::Transfer(x_top, x_gf);
+               ParSubMesh::Transfer(x_bottom, x_gf);
+               // x_mod_gf = x_gf;
+               // x_gf = interp_vals; 
+
+               // pmesh->NewNodes(x_gf, false); // Deformined mesh for H1 interpolation e;
+
+               // if (param.sim.visit)
+               // {
+               //       visit_dc.SetCycle(ti);
+               //       visit_dc.SetTime(t);
+               //       visit_dc.Save();
+               // }
+
+               // if (param.sim.paraview)
+               // {
+               //       pd->SetCycle(ti);
+               //       pd->SetTime(t);
+               //       pd->Save();
+               // }
+
+               // ti = ti+1;
+
+               // MFEM_ABORT("Force to stop!"); 
+
+               pmesh_copy->NewNodes(x_gf, false); 
+               // fixed boundary TMOP
+               param.tmop.move_bnd = false;
+               if(myid == 0){cout << "Second Remeshing " << endl;}
+               HR_adaptivity(pmesh_copy, x_mod_gf, ess_tdofs, myid, param.tmop.mesh_poly_deg, param.mesh.rs_levels, param.mesh.rp_levels, param.tmop.jitter, param.tmop.metric_id, param.tmop.target_id,\
+                              param.tmop.lim_const, param.tmop.adapt_lim_const, param.tmop.quad_type, param.tmop.quad_order, param.tmop.solver_type, param.tmop.solver_iter, param.tmop.solver_rtol, \
+                              param.tmop.solver_art_type, param.tmop.lin_solver, param.tmop.max_lin_iter, param.tmop.move_bnd, param.tmop.combomet, param.tmop.bal_expl_combo, param.tmop.hradaptivity, \
+                              param.tmop.h_metric_id, param.tmop.normalization, param.tmop.verbosity_level, param.tmop.fdscheme, param.tmop.adapt_eval, param.tmop.exactaction, param.solver.p_assembly, \
+                              param.tmop.n_hr_iter, param.tmop.n_h_iter, param.tmop.mesh_node_ordering, param.tmop.barrier_type, param.tmop.worst_case_type);
+               param.tmop.move_bnd = true;
+            }
+            */
+            
+            x_gf = *pmesh_copy->GetNodes();  x_gf *= param.tmop.ale; x_gf.Add(1.0 - param.tmop.ale, x_old_gf);
+            pmesh->NewNodes(x_gf, false); 
+            pmesh_copy->NewNodes(x_gf, false); // Deformined mesh for H1 interpolation
+
+           
+            {
+               //
+               // pmesh_old->NewNodes(x_mod2_gf, false); // Deformined mesh for H1 interpolation
+               // x_old_gf = x_mod2_gf;
+
                ParGridFunction U(&H1FESpace); 
                U =0.0; U = x_old_gf;
-               // x_gf += 0.01e3; // test for translation
                ParGridFunction S1(&L2FESpace); ParGridFunction S2(&L2FESpace); ParGridFunction S3(&L2FESpace);
                ParGridFunction S4(&L2FESpace); ParGridFunction S5(&L2FESpace); ParGridFunction S6(&L2FESpace);
                S1 =0.0; S2 =0.0; S3 =0.0; 
                S4 =0.0; S5 =0.0; S6 =0.0;
+               ParGridFunction comps(&L2FESpace); comps =0.0;
+               // ParGridFunction rmass(&L2FESpace); rmass =1.0;
+               double all_comp = 0.0;
 
                if(dim == 2){for(int i = 0; i < S1.Size(); i++ ){S1[i] = s_gf[i+S1.Size()*0];S2[i] = s_gf[i+S1.Size()*1];S3[i] = s_gf[i+S1.Size()*2];} }
                else{for(int i = 0; i < S1.Size(); i++ ){S1[i] = s_gf[i+S1.Size()*0];S2[i] = s_gf[i+S1.Size()*1];S3[i] = s_gf[i+S1.Size()*2]; S4[i] = s_gf[i+S1.Size()*3];S5[i] = s_gf[i+S1.Size()*4];S6[i] = s_gf[i+S1.Size()*5];}}
                
                if(myid==0){std::cout << "remapping for L2" << std::endl;}
-               Remapping(pmesh_old1, U, x_gf, e_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-               Remapping(pmesh_old2, U, x_gf, p_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-               Remapping(pmesh_old3, U, x_gf, ini_p_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-               
-               if(dim ==2)
+               for (int i = 0; i < pmesh->attributes.Max(); i++)
                {
-                  Remapping(pmesh_old4, U, x_gf, S1, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf; 
-                  Remapping(pmesh_old5, U, x_gf, S2, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf; 
-                  Remapping(pmesh_old6, U, x_gf, S3, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf; 
+                  for(int j = 0; j < comps.Size(); j++ ){comps[j] = comp_gf[j+comps.Size()*i];}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, comps, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  for(int j = 0; j < comps.Size(); j++ ){comp_gf[j+comps.Size()*i] = comps[j];}
+                  comps =0.0;
+               }
+               //
+               // {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, rmass, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+               {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, e_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+               {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, p_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+               {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, ini_p_gf, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+               
+               if(dim == 2)
+               {
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S1, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S2, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S3, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
                }
                else
                {
-                  Remapping(pmesh_old4, U, x_gf, S1, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-                  Remapping(pmesh_old5, U, x_gf, S2, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-                  Remapping(pmesh_old6, U, x_gf, S3, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-                  Remapping(pmesh_old7, U, x_gf, S4, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-                  Remapping(pmesh_old8, U, x_gf, S5, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
-                  Remapping(pmesh_old9, U, x_gf, S6, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); U = x_old_gf;
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S1, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S2, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S3, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S4, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S5, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+                  {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, S6, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
                }
 
-               if(dim == 2){for(int i = 0; i < S1.Size(); i++ ){s_gf[i+S1.Size()*0]=S1[i]; s_gf[i+S1.Size()*1]=S2[i];s_gf[i+S1.Size()*2]=S3[i];} }
-               else{for(int i = 0; i < S1.Size(); i++ ){s_gf[i+S1.Size()*0]=S1[i];s_gf[i+S1.Size()*1]=S2[i];s_gf[i+S1.Size()*2]=S3[i];s_gf[i+S1.Size()*3]=S4[i];s_gf[i+S1.Size()*4]=S5[i];s_gf[i+S1.Size()*5]=S6[i];}}
+               rho_gf = 0.0; lambda0_gf = 0.0; mu0_gf = 0.0;
+               for(int j = 0; j < comps.Size(); j++ )
+               {
+                  all_comp = 0.0;
+                  for (int i = 0; i < pmesh->attributes.Max(); i++){all_comp = all_comp + comp_gf[j+comps.Size()*i];}
+                  e_gf[j] = e_gf[j]/all_comp; p_gf[j] = p_gf[j]/all_comp; ini_p_gf[j] = ini_p_gf[j]/all_comp;
+                  for (int i = 0; i < pmesh->attributes.Max(); i++)
+                  {
+                    comp_gf[j+comps.Size()*i] = comp_gf[j+comps.Size()*i]/all_comp;
+                    rho_gf[j] = rho_gf[j] + z_rho[i]*comp_gf[j+comps.Size()*i];
+                    lambda0_gf[j] = lambda0_gf[j] + lambda[i]*comp_gf[j+comps.Size()*i];
+                    mu0_gf[j] = mu0_gf[j] + mu[i]*comp_gf[j+comps.Size()*i];
+                  }
+
+                  if(dim == 2){s_gf[j+S1.Size()*0]=S1[j]/all_comp;s_gf[j+S1.Size()*1]=S2[j]/all_comp;s_gf[j+S1.Size()*2]=S3[j]/all_comp;}
+                  else{s_gf[j+S1.Size()*0]=S1[j]/all_comp;s_gf[j+S1.Size()*1]=S2[j]/all_comp;s_gf[j+S1.Size()*2]=S3[j]/all_comp;s_gf[j+S1.Size()*3]=S4[j]/all_comp;s_gf[j+S1.Size()*4]=S5[j]/all_comp;s_gf[j+S1.Size()*5]=S6[j]/all_comp;}
+               }
+
+                           
+               // for(int i = 0; i < p_gf.Size(); i++ )
+               // {
+               //    if(p_gf[i] < 0.0){p_gf[i] = 0.0;} // cut-off negative values due to advection
+               //    if(ini_p_gf[i] < 0.0){ini_p_gf[i] = 0.0;} // cut-off negative values due to advection
+               // }
 
                if(myid==0){std::cout << "remapping for H1" << std::endl;}
-               // int NE_opt = pmesh_copy->GetNE(), 
-               //     nsp1 = L2FESpace.GetFE(0)->GetNodes().GetNPoints(), 
-               //     nsp2 = L2FESpace_stress.GetFE(0)->GetNodes().GetNPoints(), 
-               //     tar_ncomp = v_gf.VectorDim();
-               // // H1 space
-               // // Generate list of points where the grid function will be evaluated.
                Vector vxyz;
                int point_ordering;
                vxyz = *pmesh_copy->GetNodes(); // from target mesh
                point_ordering = pmesh_copy->GetNodes()->FESpace()->GetOrdering();
-               // int nodes_cnt = vxyz.Size() / dim;
 
                // // Find and Interpolate FE function values on the desired points.
                // // Vector interp_vals(nodes_cnt*tar_ncomp);
                FindPointsGSLIB finder(MPI_COMM_WORLD);
                finder.Setup(*pmesh_old);
                Vector interp_vals(v_gf.Size());
-               // finder.Interpolate(*pmesh_old, x_gf, v_gf, interp_vals);
-               
-               finder.Interpolate(vxyz, v_gf, interp_vals, point_ordering);
-               // v_gf = interp_vals;
-
-               for(int i = 0; i < interp_vals.Size(); i++ ){if(interp_vals[i] != 0.0){v_gf[i] = interp_vals[i];}}
-
-               finder.Interpolate(vxyz, u_gf, interp_vals, point_ordering);
-               // u_gf = interp_vals;
-               for(int i = 0; i < interp_vals.Size(); i++ ){if(interp_vals[i] != 0.0){u_gf[i] = interp_vals[i];}}
-
-               // for (int i = 0; i < vxyz.Size()/2; i++)
-               // {
-               //    std::cout << "H1 : " << i << "/" << vxyz.Size()/2 << "= (" << vxyz[i] << "," << vxyz[i+vxyz.Size()/2] << ")" << std::endl;
-               // }
-
-               // L2 space 
-               // finder.SetL2AvgType(FindPointsGSLIB::ARITHMETIC);
-               
-               // vxyz.SetSize(nsp1*NE*dim);
-               // vxyz =0.0;
-               // for (int i = 0; i < NE; i++)
-               // {
-               //    const FiniteElement *fe = L2FESpace.GetFE(i);
-               //    const IntegrationRule ir = fe->GetNodes();
-               //    ElementTransformation *et = L2FESpace.GetElementTransformation(i);
-
-               //    DenseMatrix pos;
-               //    et->Transform(ir, pos);
-               //    Vector rowx(vxyz.GetData() + i*nsp1, nsp1),
-               //          rowy(vxyz.GetData() + i*nsp1 + NE*nsp1, nsp1),
-               //          rowz;
-               //    if (dim == 3)
-               //    {
-               //       rowz.SetDataAndSize(vxyz.GetData() + i*nsp1 + 2*NE*nsp1, nsp1);
-               //    }
-               //    pos.GetRow(0, rowx);
-               //    pos.GetRow(1, rowy);
-               //    if (dim == 3) { pos.GetRow(2, rowz); }
-               // }
-
-               // // 
-               // for (int i = 0; i < vxyz.Size()/2; i++)
-               // {
-               //    std::cout << "L2 : " << i << "/" << vxyz.Size()/2 << "= (" << vxyz[i] << "," << vxyz[i+vxyz.Size()/2] << ")" << std::endl;
-               // }
-
-               // point_ordering = Ordering::byNODES;
-               // // nodes_cnt = vxyz.Size() / dim;
-               // tar_ncomp = e_gf.VectorDim();
-
-               // // Find and Interpolate FE function values on the desired points.
-               // // interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;/
-               // interp_vals.SetSize(e_gf.Size()); interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, e_gf, interp_vals, point_ordering);
-               // e_gf = interp_vals; interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, p_gf, interp_vals, point_ordering);
-               // p_gf = interp_vals; interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, n_p_gf, interp_vals, point_ordering);
-               // n_p_gf = interp_vals; interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, ini_p_gf, interp_vals, point_ordering);
-               // ini_p_gf = interp_vals; interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, rho0_gf, interp_vals, point_ordering);
-               // rho0_gf = interp_vals; interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, lambda0_gf, interp_vals, point_ordering);
-               // lambda0_gf = interp_vals; interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, mu0_gf, interp_vals, point_ordering);
-               // mu0_gf = interp_vals; interp_vals = 0.0;
-
-               // finder.Interpolate(xyz_gf_l2, mat_gf, interp_vals, point_ordering);
-               // mat_gf = interp_vals; interp_vals = 0.0;
-
-               // // L2 space of stress
-               // interp_vals.SetSize(s_gf.Size()); interp_vals = 0.0;
-               // finder.Interpolate(xyz_gf_l2, s_gf, interp_vals, point_ordering);
-               // s_gf = interp_vals;
-
-               // // // L2 space of stress
-               // vxyz.SetSize(nsp2*NE*dim);
-               // vxyz =0.0;
-               // for (int i = 0; i < NE; i++)
-               // {
-               //    const FiniteElement *fe = L2FESpace.GetFE(i);
-               //    const IntegrationRule ir = fe->GetNodes();
-               //    ElementTransformation *et = L2FESpace.GetElementTransformation(i);
-
-               //    DenseMatrix pos;
-               //    et->Transform(ir, pos);
-               //    Vector rowx(vxyz.GetData() + i*nsp2, nsp2),
-               //          rowy(vxyz.GetData() + i*nsp2 + NE*nsp2, nsp2),
-               //          rowz;
-               //    if (dim == 3)
-               //    {
-               //       rowz.SetDataAndSize(vxyz.GetData() + i*nsp2 + 2*NE*nsp2, nsp2);
-               //    }
-               //    pos.GetRow(0, rowx);
-               //    pos.GetRow(1, rowy);
-               //    if (dim == 3) { pos.GetRow(2, rowz); }
-               // }
-               // point_ordering = Ordering::byNODES;
-               // nodes_cnt = vxyz.Size() / dim;
-               // tar_ncomp = s_gf.VectorDim();
-
-               // // Find and Interpolate FE function values on the desired points.
-               // interp_vals.SetSize(nodes_cnt*tar_ncomp); interp_vals = 0.0;
-
-               // std::cout << xyz_gf_l2.Size() <<","<<vxyz.Size() << std::endl;
-               // std::cout << s_gf.Size() <<","<<nodes_cnt*tar_ncomp << std::endl;
-               // finder.Interpolate(vxyz, s_gf, interp_vals, point_ordering);
-               // s_gf = interp_vals;
-               
+               finder.Interpolate(vxyz, v_gf, interp_vals, point_ordering); for(int i = 0; i < interp_vals.Size(); i++ ){if(interp_vals[i] != 0.0){v_gf[i] = interp_vals[i];}}
+               finder.Interpolate(vxyz, u_gf, interp_vals, point_ordering); for(int i = 0; i < interp_vals.Size(); i++ ){if(interp_vals[i] != 0.0){u_gf[i] = interp_vals[i];}}
             }
             delete pmesh_old; 
-            delete pmesh_old1; 
-            delete pmesh_old2;
-            delete pmesh_old3; 
-            delete pmesh_old4; 
-            delete pmesh_old5; 
-            delete pmesh_old6;
-            delete pmesh_old7; 
-            delete pmesh_old8; 
-            delete pmesh_old9; 
             delete pmesh_copy;
+            delete pmesh_copy_old;
+
+            // Compute the geometric parameter at the dofs of each element.
+            for (int e = 0; e < pmesh->GetNE(); e++)
+            {
+               const FiniteElement *fe = L2FESpace_geometric.GetFE(e);
+               const IntegrationRule &ir = fe->GetNodes();
+               L2FESpace_geometric.GetElementVDofs(e, vdofs);
+               allVals.SetSize(vdofs.Size());
+               for (int q = 0; q < ir.GetNPoints(); q++)
+               {
+                  const IntegrationPoint &ip = ir.IntPoint(q);
+                  pmesh->GetElementJacobian(e, jacobian, &ip);
+                  double sizeVal;
+                  Vector asprVals, skewVals, oriVals;
+                  pmesh->GetGeometricParametersFromJacobian(jacobian, sizeVal,
+                                                         asprVals, skewVals, oriVals);
+                  allVals(q + 0) = sizeVal;
+                  for (int n = 0; n < nAspr; n++)
+                  {
+                     allVals(q + (n+1)*ir.GetNPoints()) = asprVals(n);
+                  }
+                  for (int n = 0; n < nSkew; n++)
+                  {
+                     allVals(q + (n+1+nAspr)*ir.GetNPoints()) = skewVals(n);
+                  }
+               }
+               quality.SetSubVector(vdofs, allVals);
+            }
+
+            Vector skew_vec(e_gf.Size());
+            skew_vec = 1.0;
+            for(int i = 0; i < e_gf.Size(); i++){skew_vec[i] = quality[e_gf.Size() + i];}
+
+            double local_max_skew = skew_vec.Max();
+            double local_min_skew = skew_vec.Min();
+            double global_max_skew;
+            double global_min_skew;
+
+            MPI_Reduce(&local_max_skew, &global_max_skew, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&local_min_skew, &global_min_skew, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_max_skew, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            MPI_Bcast(&global_min_skew, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+            cond_num = std::max(global_max_skew, 1.0/global_min_skew);
+
+            if(myid==0){std::cout << "skew number : " << cond_num << std::endl;}
             
             // if(dim ==2) {delete S1; delete S2; delete S3;}
             // else {delete S1; delete S2; delete S3; delete S4; delete S5; delete S6;}
@@ -2007,29 +2553,29 @@ int main(int argc, char *argv[])
             if (mesh_changed & param.tmop.amr)
             {
                // update state and operator
-               TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+               TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, dim, param.tmop.amr);
                geo.TMOPUpdate(S, true);
                pmesh->Rebalance();
-               TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, flattening, dim, param.tmop.amr);
+               TMOPUpdate(S, S_old, offset, x_gf, v_gf, e_gf, s_gf, x_ini_gf, p_gf, n_p_gf, ini_p_gf, u_gf, rho0_gf, lambda0_gf, mu0_gf, mat_gf, dim, param.tmop.amr);
                geo.TMOPUpdate(S, false);
                ode_solver->Init(geo);
             }
 
-            // if (param.sim.visit)
-            // {
-            //       visit_dc.SetCycle(ti);
-            //       visit_dc.SetTime(t+t*1e-4);
-            //       visit_dc.Save();
-            // }
+            if (param.sim.visit)
+            {
+                  visit_dc.SetCycle(ti);
+                  visit_dc.SetTime(t);
+                  visit_dc.Save();
+            }
 
-            // if (param.sim.paraview)
-            // {
-            //       pd->SetCycle(ti);
-            //       pd->SetTime(t+t*1e-4);
-            //       pd->Save();
-            // }
+            if (param.sim.paraview)
+            {
+                  pd->SetCycle(ti);
+                  pd->SetTime(t);
+                  pd->Save();
+            }
 
-            // ti = ti+1;
+            ti = ti+1;
 
           }
       }
@@ -2139,47 +2685,37 @@ int main(int argc, char *argv[])
       //    geo.TMOPUpdate(S, false);
       //    ode_solver->Init(geo);
       // }
-      
-      // // Surface diffusion
-      // {
-      //    for( int i = 0; i < topo.Size(); i++ ){topo[i] = x_top[i+topo.Size()];}
-      //    ConstantCoefficient diffusivity(1e-6);
-      //    ParLinearForm b_top(&sub_fespace1);
-      //    b_top.AddDomainIntegrator(new DomainLFIntegrator(diffusivity));
-      //    b_top.Assemble();
-      //    ParBilinearForm a_top(&sub_fespace1);
-      //    a_top.AddDomainIntegrator(new DiffusionIntegrator);
-      //    a_top.Assemble();
-      //    HypreParMatrix A_top;
-      //    Vector B_top, X_top;
-      //    a_top.FormLinearSystem(boundary_dofs, topo, b_top, A_top, X_top, B_top);
-      //    CGSolver cg(MPI_COMM_WORLD);
-      //    HypreSmoother prec;
-      //    prec.SetType(HypreSmoother::Chebyshev);  // Chebyshev
-      //    cg.SetPreconditioner(prec);
-      //    cg.SetOperator(A_top);
-      //    cg.SetRelTol(1e-12);
-      //    cg.SetAbsTol(0.0);
-      //    cg.SetMaxIter(2000);
-      //    cg.SetPrintLevel(-1);
-      //    cg.Mult(B_top, X_top);
-      //    a_top.RecoverFEMSolution(X_top, b_top, topo);
-      //    for( int i = 0; i < topo.Size(); i++ ){x_top[i+topo.Size()] = x_top[i+topo.Size()] + (x_top[i+topo.Size()]-topo[i])*dt;}
-      //    ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
-      // }
-
 
       if(param.control.surf_proc)
       {
          ParSubMesh::Transfer(x_gf, x_top); // update current mesh to submesh
          for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
          topo.GetTrueDofs(topo_t); 
-         x_top_old=x_top; topo_t_old=topo; 
+         // x_top_old=x_top; 
+         topo_t_old=topo; 
          ode_solver_sub->Step(topo_t, t, dt); t=t-dt;
          topo.SetFromTrueDofs(topo_t);
          for (int i = 0; i < topo.Size(); i++){x_top[i+topo.Size()] = topo[i];}
          submesh.NewNodes(x_top, false);
          ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
+      }
+
+      if(param.control.winkler_foundation & param.control.winkler_flat)
+      {
+         // ParSubMesh::Transfer(x_gf, x_bottom); // update current mesh to submesh
+         // for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = bottom[i];}
+         // ParSubMesh::Transfer(x_bottom, x_gf); // update adjusted nodes on top boundary   
+
+         ParSubMesh::Transfer(x_gf, x_bottom); // update current mesh to submesh
+         for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
+         bottom.GetTrueDofs(bottom_t); 
+         // x_bottom_old=x_bottom; 
+         bottom_t_old=bottom; 
+         ode_solver_sub2->Step(bottom_t, t, dt); t=t-dt;
+         bottom.SetFromTrueDofs(bottom_t);
+         for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = bottom[i];}
+         submesh_bottom.NewNodes(x_bottom, false);
+         ParSubMesh::Transfer(x_bottom, x_gf); // update adjusted nodes on top boundary 
       }
 
       // if(param.control.winkler_foundation & param.control.winkler_flat) {for( int i = 0; i < x_gf.Size(); i++ ){if(flattening[i] > 0.0){x_gf[i] = x_ini_gf[i];}}}
@@ -2197,8 +2733,59 @@ int main(int argc, char *argv[])
       // Make sure that the mesh corresponds to the new solution state. This is
       // needed, because some time integrators use different S-type vectors
       // and the oper object might have redirected the mesh positions to those.
-      pmesh->NewNodes(x_gf, false);
+
+      // if(ini_lithostatic)
+      // {
+      //    pmesh->NewNodes(x_gf, false);
+      // }
+
       u_gf.Add(dt, v_gf);
+
+      {
+         // Compute the geometric parameter at the dofs of each element.
+         for (int e = 0; e < pmesh->GetNE(); e++)
+         {
+            const FiniteElement *fe = L2FESpace_geometric.GetFE(e);
+            const IntegrationRule &ir = fe->GetNodes();
+            L2FESpace_geometric.GetElementVDofs(e, vdofs);
+            allVals.SetSize(vdofs.Size());
+            for (int q = 0; q < ir.GetNPoints(); q++)
+            {
+               const IntegrationPoint &ip = ir.IntPoint(q);
+               pmesh->GetElementJacobian(e, jacobian, &ip);
+               double sizeVal;
+               Vector asprVals, skewVals, oriVals;
+               pmesh->GetGeometricParametersFromJacobian(jacobian, sizeVal,
+                                                      asprVals, skewVals, oriVals);
+               allVals(q + 0) = sizeVal;
+               for (int n = 0; n < nAspr; n++)
+               {
+                  allVals(q + (n+1)*ir.GetNPoints()) = asprVals(n);
+               }
+               for (int n = 0; n < nSkew; n++)
+               {
+                  allVals(q + (n+1+nAspr)*ir.GetNPoints()) = skewVals(n);
+               }
+            }
+            quality.SetSubVector(vdofs, allVals);
+         }
+
+         Vector skew_vec(e_gf.Size());
+         skew_vec = 1.0;
+         for(int i = 0; i < e_gf.Size(); i++){skew_vec[i] = quality[e_gf.Size() + i];}
+
+         double local_max_skew = skew_vec.Max();
+         double local_min_skew = skew_vec.Min();
+         double global_max_skew;
+         double global_min_skew;
+
+         MPI_Reduce(&local_max_skew, &global_max_skew, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+         MPI_Reduce(&local_min_skew, &global_min_skew, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+         MPI_Bcast(&global_max_skew, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+         MPI_Bcast(&global_min_skew, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+         cond_num = std::max(global_max_skew, 1.0/global_min_skew);
+      }
 
       if (last_step || (ti % param.sim.vis_steps) == 0)
       {
@@ -2212,12 +2799,62 @@ int main(int argc, char *argv[])
          }
          const double internal_energy = geo.InternalEnergy(e_gf);
          const double kinetic_energy = geo.KineticEnergy(v_gf);
-         double local_max_vel = std::max(fabs(v_gf.Min()), v_gf.Max())*86400*365*100;
+         Vector vel_mag(v_gf.Size()/dim);
+         for (int i = 0; i < v_gf.Size()/dim; i++)
+         {
+            if(dim == 2){vel_mag[i] = sqrt(pow(v_gf[i], 2) + pow(v_gf[i+v_gf.Size()/dim], 2));}
+            else{vel_mag[i] = sqrt(pow(v_gf[i], 2) + pow(v_gf[i+v_gf.Size()/dim], 2) + pow(v_gf[i+2*v_gf.Size()/dim], 2));}
+         }
+
+         double local_max_vel = vel_mag.Max();
          double global_max_vel;
 
          MPI_Reduce(&local_max_vel, &global_max_vel, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+         MPI_Bcast(&global_max_vel, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-         // std::cout << myid << ", local_max_vel (cm/yr) = " << local_max_vel  << std::endl;
+         // // Compute the geometric parameter at the dofs of each element.
+         // for (int e = 0; e < pmesh->GetNE(); e++)
+         // {
+         //    const FiniteElement *fe = L2FESpace_geometric.GetFE(e);
+         //    const IntegrationRule &ir = fe->GetNodes();
+         //    L2FESpace_geometric.GetElementVDofs(e, vdofs);
+         //    allVals.SetSize(vdofs.Size());
+         //    for (int q = 0; q < ir.GetNPoints(); q++)
+         //    {
+         //       const IntegrationPoint &ip = ir.IntPoint(q);
+         //       pmesh->GetElementJacobian(e, jacobian, &ip);
+         //       double sizeVal;
+         //       Vector asprVals, skewVals, oriVals;
+         //       pmesh->GetGeometricParametersFromJacobian(jacobian, sizeVal,
+         //                                              asprVals, skewVals, oriVals);
+         //       allVals(q + 0) = sizeVal;
+         //       for (int n = 0; n < nAspr; n++)
+         //       {
+         //          allVals(q + (n+1)*ir.GetNPoints()) = asprVals(n);
+         //       }
+         //       for (int n = 0; n < nSkew; n++)
+         //       {
+         //          allVals(q + (n+1+nAspr)*ir.GetNPoints()) = skewVals(n);
+         //       }
+         //    }
+         //    quality.SetSubVector(vdofs, allVals);
+         // }
+
+         // Vector skew_vec(e_gf.Size());
+         // skew_vec = 1.0;
+         // for(int i = 0; i < e_gf.Size(); i++){skew_vec[i] = quality[e_gf.Size() + i];}
+
+         // double local_max_skew = skew_vec.Max();
+         // double local_min_skew = skew_vec.Min();
+         // double global_max_skew;
+         // double global_min_skew;
+
+         // MPI_Reduce(&local_max_skew, &global_max_skew, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+         // MPI_Reduce(&local_min_skew, &global_min_skew, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+         // MPI_Bcast(&global_max_skew, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+         // MPI_Bcast(&global_min_skew, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+         // cond_num = std::max(global_max_skew, 1.0/global_min_skew);
 
          if(param.sim.year)
          {
@@ -2232,9 +2869,9 @@ int main(int argc, char *argv[])
                  << ",\t|e| = " << std::setw(5) << std::setprecision(3) << std::scientific
                  << sqrt_norm
                  << ", max_vel (cm/yr) = " << std::setw(5) << std::setprecision(3) << std::scientific
-                 << global_max_vel
-                 << ", h_min (m) = " << std::setw(5) << std::setprecision(3) << std::scientific
-                 << h_min;
+                 << global_max_vel*86400*365*100
+                 << ", max_skew = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << cond_num;
             //  << ",\t|IE| = " << std::setprecision(10) << std::scientific
             //  << internal_energy
             //   << ",\t|KE| = " << std::setprecision(10) << std::scientific
@@ -2301,6 +2938,9 @@ int main(int argc, char *argv[])
                                           Wx, Wy, Ww,Wh);
             Wx += offx;
          }
+
+         // cond_num = global_max_skew;
+         // std::cout << global_max_skew << ","<< global_min_skew <<std::endl;
 
          if (param.sim.visit)
          {
@@ -2422,6 +3062,7 @@ int main(int argc, char *argv[])
    delete ode_solver;
    delete pmesh;
    delete ode_solver_sub;
+   delete ode_solver_sub2;
 
    return 0;
 }
@@ -2441,7 +3082,7 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
                ParGridFunction &lambda0_gf,
                ParGridFunction &mu0_gf,
                ParGridFunction &mat_gf,
-               ParLinearForm &flattening,
+               // ParLinearForm &flattening,
                int dim, bool amr)
 {
    ParFiniteElementSpace* H1FESpace = x_gf.ParFESpace();
@@ -2502,8 +3143,8 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
    mat_gf.Update();
    
    //
-   flattening.Update();
-   flattening.Assemble();
+   // flattening.Update();
+   // flattening.Assemble();
    
    H1FESpace->UpdatesFinished();
    L2FESpace->UpdatesFinished();

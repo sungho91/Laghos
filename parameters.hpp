@@ -59,6 +59,7 @@ struct BC {
 struct Control {
     bool   winkler_foundation;
     bool   winkler_flat;
+    double flat_rate;
     bool   lithostatic;
     double init_dt;
     double mscale;
@@ -97,8 +98,10 @@ struct Mat {
     std::string tension_cutoff;
     std::string cohesion0;
     std::string cohesion1;
-    std::string friction_angle;
-    std::string dilation_angle;
+    std::string friction_angle0;
+    std::string friction_angle1;
+    std::string dilation_angle0;
+    std::string dilation_angle1;
     std::string pls0;
     std::string pls1;
     std::string plastic_viscosity;

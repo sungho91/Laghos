@@ -649,13 +649,21 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S,
    Vector* sptr = const_cast<Vector*>(&S);
    ParGridFunction v;
    v.MakeRef(&H1, *sptr, H1.GetVSize());
-
+   
    // MPI_Comm comm = pmesh->GetComm();
    // int num_procs, myid;
    // MPI_Comm_size(comm, &num_procs);
    // MPI_Comm_rank(comm, &myid);
    
-   double local_max_vel = std::max(fabs(v.Min()), v.Max());
+   Vector vel_mag(H1.GetVSize()/dim);
+   for (int i = 0; i < H1.GetVSize()/dim; i++)
+   {
+      if(dim == 2){vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2));}
+      else{vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2) + pow(v[i+2*H1.GetVSize()/dim], 2));}
+   }
+
+   double cut_off_vel   = 1.0/86400.0/365.25/1000.0/100.0; // 0.01 mm/yr
+   double local_max_vel = std::max(cut_off_vel, vel_mag.Max());
    double global_max_vel;
 
    MPI_Reduce(&local_max_vel, &global_max_vel, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -671,18 +679,15 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S,
    // MPI_Reduce(&local_bulkm, &bulkm, 1, MPI_DOUBLE, MPI_MAX, 0, pmesh->GetComm());
    // MPI_Reduce(&local_denm, &denm, 1, MPI_DOUBLE, MPI_MAX, 0, pmesh->GetComm());
 
-   double ref_m = 1/(global_max_vel/(10.0/86400/365.25/100));
+   // double ref_m = 1.0/86400/365.25; // 1 m/yr
    double pseudo_speed = global_max_vel * mass_scale;
-   // double mfactor = (pseudo_speed * pseudo_speed) / bulkm;
    double mfactor = (pseudo_speed * pseudo_speed) / bulkm;
+   if(mfactor > 1.0){mfactor = 1.0;} // if mass scaling is greater than unity, mass scaling is off.
+   if(mass_scale == 1.0){mfactor = 1.0;} // no mass scaling
+
    // double mfactor = (denm * pseudo_speed * pseudo_speed) / bulkm;
    // mfactor = (1/pseudo_speed) / bulkm;
-
-   // mfactor = 1e-16;
-
-   // if(mfactor > 1e-11){mfactor = 1e-11;}
-   
-   // if(mass_scale = 1.0){mfactor = 1.0;}
+   // mfactor = 1e-20;
 
    // The monolithic BlockVector stores the unknown fields as follows:
    // (Position, Velocity, Specific Internal Energy).
@@ -1247,7 +1252,16 @@ void LagrangianGeoOperator::Getdamping(const Vector &S, Vector &_v_damping) cons
    v.MakeRef(&H1, *sptr, H1.GetVSize());
    // double max_vel{0.0};
    // double mass_scale{0.0};
-   double local_max_vel = std::max(fabs(v.Min()), v.Max());
+   
+   Vector vel_mag(H1.GetVSize()/dim);
+   for (int i = 0; i < H1.GetVSize()/dim; i++)
+   {
+      if(dim == 2){vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2));}
+      else{vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2) + pow(v[i+2*H1.GetVSize()/dim], 2));}
+   }
+
+   double cut_off_vel   = 1.0/86400.0/365.25/1000.0/100.0; // 0.01 mm/yr
+   double local_max_vel = std::max(cut_off_vel, vel_mag.Max());
    double global_max_vel;
    MPI_Reduce(&local_max_vel, &global_max_vel, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
    // Broadcast the global_max from process 0 to all other processes
@@ -1261,7 +1275,7 @@ void LagrangianGeoOperator::Getdamping(const Vector &S, Vector &_v_damping) cons
    //    _v_damping[i]=-1*copysignl(1.0, vt[i])*fabs(_v_damping[i]); //
    // }
 
-   if(global_max_vel > 1e-10)
+   if(global_max_vel > cut_off_vel)
    {
       for( int i = 0; i < _v_damping.Size(); i++ )
       {  
@@ -1277,7 +1291,15 @@ void LagrangianGeoOperator::Getdamping_comp(const Vector &S, const int &comp, Ve
    ParGridFunction v;
    v.MakeRef(&H1, *sptr, H1.GetVSize());
    // double mass_scale{0.0};
-   double local_max_vel = std::max(fabs(v.Min()), v.Max());
+   Vector vel_mag(H1.GetVSize()/dim);
+   for (int i = 0; i < H1.GetVSize()/dim; i++)
+   {
+      if(dim == 2){vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2));}
+      else{vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2) + pow(v[i+2*H1.GetVSize()/dim], 2));}
+   }
+
+   double cut_off_vel   = 1.0/86400.0/365.25/1000.0/100.0; // 0.01 mm/yr
+   double local_max_vel = std::max(cut_off_vel, vel_mag.Max());
    double global_max_vel;
    MPI_Reduce(&local_max_vel, &global_max_vel, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
    // Broadcast the global_max from process 0 to all other processes
@@ -1290,7 +1312,7 @@ void LagrangianGeoOperator::Getdamping_comp(const Vector &S, const int &comp, Ve
    //    _v_damping[i]=-1*copysignl(1.0, vt[i+_v_damping.Size()*comp])*fabs(_v_damping[i]); //
    // }
 
-   if(global_max_vel > 1e-10)
+   if(global_max_vel > cut_off_vel)
    {
       for( int i = 0; i < _v_damping.Size(); i++ )
       {  
@@ -1838,7 +1860,15 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S, const double d
    int    index = 0;
    mscale = qdata.mscale;
    grav   = -1.0*qdata.gravity;
-   double local_max_vel = std::max(fabs(v.Min()), v.Max());
+   Vector vel_mag(H1.GetVSize()/dim);
+   for (int i = 0; i < H1.GetVSize()/dim; i++)
+   {
+      if(dim == 2){vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2));}
+      else{vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2) + pow(v[i+2*H1.GetVSize()/dim], 2));}
+   }
+
+   double cut_off_vel   = 1.0/86400.0/365.25/1000.0/100.0; // 0.01 mm/yr
+   double local_max_vel = std::max(cut_off_vel, vel_mag.Max());
    double global_max_vel;
    MPI_Reduce(&local_max_vel, &global_max_vel, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
    // Broadcast the global_max from process 0 to all other processes
@@ -2915,7 +2945,16 @@ void QUpdate::UpdateQuadratureData(const Vector &S, QuadratureData &qdata, const
    q_dt_est = qdata.dt_est;
    // int v_offset=L2.GetVSize(); // 
 
-   double local_max_vel = std::max(fabs(v.Min()), v.Max());
+   Vector vel_mag(H1.GetVSize()/dim);
+   for (int i = 0; i < H1.GetVSize()/dim; i++)
+   {
+      if(dim == 2){vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2));}
+      else{vel_mag[i] = sqrt(pow(v[i], 2) + pow(v[i+H1.GetVSize()/dim], 2) + pow(v[i+2*H1.GetVSize()/dim], 2));}
+   }
+
+   double cut_off_vel   = 1.0/86400.0/365.25/1000.0/100.0; // 0.01 mm/yr
+   double local_max_vel = std::max(cut_off_vel, vel_mag.Max());
+
    double global_max_vel;
    MPI_Reduce(&local_max_vel, &global_max_vel, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
    // Broadcast the global_max from process 0 to all other processes

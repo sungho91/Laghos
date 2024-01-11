@@ -5,7 +5,7 @@
 #include "laghost_rheology.hpp"
 namespace mfem
 {
-   void Returnmapping (Vector &s_gf, Vector &s_old_gf, Vector &p_gf, Vector &mat_gf, int &dim, Vector &lambda, Vector &mu, Vector &tension_cutoff, Vector &cohesion0, Vector &cohesion1, Vector &pls0, Vector &pls1, Vector &friction_angle, Vector &dilation_angle, Vector &plastic_viscosity, double &dt_old) 
+   void Returnmapping (Vector &comp_gf, Vector &s_gf, Vector &s_old_gf, Vector &p_gf, Vector &mat_gf, int &dim, Vector &lambda, Vector &mu, Vector &tension_cutoff, Vector &cohesion0, Vector &cohesion1, Vector &pls0, Vector &pls1, Vector &friction_angle0, Vector &friction_angle1, Vector &dilation_angle0, Vector &dilation_angle1, Vector &plastic_viscosity, double &dt_old) 
    {
       DenseMatrix esig(3);
       DenseMatrix esig_old(3);
@@ -37,13 +37,29 @@ namespace mfem
       double numerator   = {0.0};
       double denominator = {0.0};
       double pls_old = {0.0}; // cumulative 2nd invariant of plastic strain
-      double p_slope = {0.0}; // cumulative 2nd invariant of plastic strain
+      double p_slope = {0.0}; 
+      double fri_str = {0.0}; // strain_dependent friction angle
+      double dil_str = {0.0}; // strain_dependent dilation angle
       double coh_str = {0.0}; // strain_dependent cohesion
       double ten_cut = {0.0};
       int mat{0};
       int nsize{mat_gf.Size()};
+      int mat_num{lambda.Size()};
       bool viscoplastic = true;
       // bool viscoplastic = false;
+
+      double pls0_c = {0.0}; 
+      double pls1_c = {0.0}; 
+      double lambda_c = {0.0}; 
+      double mu_c = {0.0}; 
+      double tension_cutoff_c = {0.0}; 
+      double cohesion0_c = {0.0}; 
+      double cohesion1_c = {0.0}; 
+      double friction_angle0_c ={0.0}; 
+      double friction_angle1_c ={0.0}; 
+      double dilation_angle0_c ={0.0}; 
+      double dilation_angle1_c ={0.0}; 
+      double plastic_viscosity_c ={0.0};
 
       for( int i = 0; i < nsize; i++ )
       {  
@@ -53,8 +69,28 @@ namespace mfem
 
             mat = mat_gf[i];
             pls_old = p_gf[i];
+            if(pls_old < 0.0){pls_old =0.0;}
+
+            pls0_c =0.0; pls1_c =0.0; lambda_c = 0.0; mu_c = 0.0;
+            tension_cutoff_c = 0.0; cohesion0_c = 0.0; cohesion1_c = 0.0; friction_angle0_c = 0.0; friction_angle1_c = 0.0;
+            dilation_angle0_c = 0.0; dilation_angle1_c = 0.0; plastic_viscosity_c = 0.0;
+            for( int ii = 0; ii < mat_num; ii++ )
+            {
+               pls0_c = pls0_c + comp_gf[i+nsize*ii]*pls0[ii];
+               pls1_c = pls1_c + comp_gf[i+nsize*ii]*pls1[ii];
+               lambda_c = lambda_c + comp_gf[i+nsize*ii]*lambda[ii];
+               mu_c = mu_c + comp_gf[i+nsize*ii]*mu[ii];
+               tension_cutoff_c = tension_cutoff_c + comp_gf[i+nsize*ii]*tension_cutoff[ii];
+               cohesion0_c = cohesion0_c + comp_gf[i+nsize*ii]*cohesion0[ii];
+               cohesion1_c = cohesion1_c + comp_gf[i+nsize*ii]*cohesion1[ii];
+               friction_angle0_c = friction_angle0_c + comp_gf[i+nsize*ii]*friction_angle0[ii];
+               friction_angle1_c = friction_angle1_c + comp_gf[i+nsize*ii]*friction_angle1[ii];
+               dilation_angle0_c = dilation_angle0_c + comp_gf[i+nsize*ii]*dilation_angle0[ii];
+               dilation_angle1_c = dilation_angle1_c + comp_gf[i+nsize*ii]*dilation_angle1[ii];
+               plastic_viscosity_c = plastic_viscosity_c + comp_gf[i+nsize*ii]*plastic_viscosity[ii];
+            }
             // linear weakening
-            p_slope = (pls_old - pls0[mat])/(pls1[mat] - pls0[mat]);
+            p_slope = (pls_old - pls0_c)/(pls1_c - pls0_c);
 
             if(dim ==2) 
             {
@@ -62,16 +98,16 @@ namespace mfem
                // sxx, syy, szz, sxz are non zeros.
                // sxy, syz are zero.
                msig = (s_gf[i+nsize*0] + s_gf[i+nsize*1])*0.5;
-               evol = msig/(lambda[mat]+mu[mat]);
-               syy  = evol * lambda[mat];
+               evol = msig/(lambda_c+mu_c);
+               syy  = evol * lambda_c;
                esig(0,0) = s_gf[i+nsize*0]; esig(0,1) = 0.0; esig(0,2) = s_gf[i+nsize*2]; 
                esig(1,0) =             0,0; esig(1,1) = syy; esig(1,2) =             0.0;
                esig(2,0) = s_gf[i+nsize*2]; esig(2,1) = 0.0; esig(2,2) = s_gf[i+nsize*1];
 
                // Caushy stress at previous time step
                msig = (s_old_gf[i+nsize*0] + s_old_gf[i+nsize*1])*0.5;
-               evol = msig/(lambda[mat]+mu[mat]);
-               syy  = evol * lambda[mat];
+               evol = msig/(lambda_c+mu_c);
+               syy  = evol * lambda_c;
                esig_old(0,0) = s_old_gf[i+nsize*0]; esig_old(0,1) = 0.0; esig_old(0,2) = s_old_gf[i+nsize*2]; 
                esig_old(1,0) =                 0,0; esig_old(1,1) = syy; esig_old(1,2) =                 0.0;
                esig_old(2,0) = s_old_gf[i+nsize*2]; esig_old(2,1) = 0.0; esig_old(2,2) = s_old_gf[i+nsize*1];
@@ -112,31 +148,36 @@ namespace mfem
             sig1 = sig_var[min_index]; // most compressive pincipal stress
             sig3 = sig_var[max_index]; // least compressive pincipal stress
 
-            N_phi = (1+sin(DEG2RAD*friction_angle[mat]))/(1-sin(DEG2RAD*friction_angle[mat]));
-            st_N_phi = cos(DEG2RAD*friction_angle[mat])/(1-sin(DEG2RAD*friction_angle[mat]));
-            N_psi = -1*(1+sin(DEG2RAD*dilation_angle[mat]))/(1-sin(DEG2RAD*dilation_angle[mat])); // partial_g/partial_sig3
-            
-            coh_str = cohesion0[mat];
+            // linear strain weaking on cohesion, friction and dilation angles.
+            coh_str = cohesion0_c; fri_str = friction_angle0_c; dil_str = dilation_angle0_c;
 
-            if (pls_old < pls0[mat]) {
+            if (pls_old < pls0_c) {
                // no weakening yet
-               coh_str = cohesion0[mat];
+               coh_str = cohesion0_c;
+               fri_str = friction_angle0_c;
+               dil_str = dilation_angle0_c;
             }
-            else if (pls_old < pls1[mat]) {
+            else if (pls_old < pls1_c) {
                // linear weakening
-               coh_str = cohesion0[mat] + p_slope * (cohesion1[mat] - cohesion0[mat]);
+               coh_str = cohesion0_c + p_slope * (cohesion1_c - cohesion0_c);
+               fri_str = friction_angle0_c + p_slope * (friction_angle1_c - friction_angle0_c);
+               dil_str = dilation_angle0_c + p_slope * (dilation_angle1_c - dilation_angle0_c);
             }
             else {
                // saturated weakening
-               coh_str = cohesion1[mat];
+               coh_str = cohesion1_c; fri_str = friction_angle1_c; dil_str = dilation_angle1_c;
             }
 
-            if(tension_cutoff[mat] == 0)
+            N_phi = (1+sin(DEG2RAD*fri_str))/(1-sin(DEG2RAD*fri_str));
+            st_N_phi = cos(DEG2RAD*fri_str)/(1-sin(DEG2RAD*fri_str));
+            N_psi = -1*(1+sin(DEG2RAD*dil_str))/(1-sin(DEG2RAD*dil_str)); // partial_g/partial_sig3
+
+            if(tension_cutoff_c == 0)
             {
-               ten_cut = coh_str/tan(DEG2RAD*friction_angle[mat]);
+               ten_cut = coh_str/tan(DEG2RAD*fri_str);
                // std::cout << "tension cutoff " << ten_cut << std::endl;
             }
-            else{ten_cut = tension_cutoff[mat];}
+            else{ten_cut = tension_cutoff_c;}
 
             // shear failure function
             fs = sig1 - N_phi*sig3 + 2*coh_str*st_N_phi;
@@ -151,11 +192,11 @@ namespace mfem
             {
                // Equations 28 and 30 from Choi et al. (2013; DynEarthSol2D: An efficient unstructured finite element method to study long-term tectonic deformation). 
                beta = fs;
-               beta = beta / (((lambda[mat]+2*mu[mat])*1 - N_phi*lambda[mat]*1) + (lambda[mat]*N_psi - N_phi*(lambda[mat]+2*mu[mat])*N_psi));
+               beta = beta / (((lambda_c+2*mu_c)*1 - N_phi*lambda_c*1) + (lambda_c*N_psi - N_phi*(lambda_c+2*mu_c)*N_psi));
                
-               plastic_str(0,0) = (lambda[mat] + 2*mu[mat] + lambda[mat]*N_psi) * beta; 
-               plastic_str(1,1) = (lambda[mat] + lambda[mat]*N_psi) * beta;
-               plastic_str(2,2) = (lambda[mat] + (lambda[mat]+2*mu[mat])*N_psi) * beta;
+               plastic_str(0,0) = (lambda_c + 2*mu_c + lambda_c*N_psi) * beta; 
+               plastic_str(1,1) = (lambda_c + lambda_c*N_psi) * beta;
+               plastic_str(2,2) = (lambda_c + (lambda_c+2*mu_c)*N_psi) * beta;
                // reduced form of 2nd invariant
                if(dim ==2)
                {
@@ -172,11 +213,11 @@ namespace mfem
             else if (ft > 0 & fh > 0) // stress correction at tension failure
             {
                beta = ft;
-               beta = beta/(lambda[mat]+2*mu[mat]);
+               beta = beta/(lambda_c+2*mu_c);
 
-               plastic_str(0,0) = lambda[mat] * beta * 1;
-               plastic_str(1,1) = lambda[mat] * beta * 1;
-               plastic_str(2,2) = (lambda[mat]+2*mu[mat]) * beta * 1;
+               plastic_str(0,0) = lambda_c * beta * 1;
+               plastic_str(1,1) = lambda_c * beta * 1;
+               plastic_str(2,2) = (lambda_c+2*mu_c) * beta * 1;
 
                // reduced form of 2nd invariant
                if(dim ==2)
@@ -207,7 +248,7 @@ namespace mfem
             plastic_sig(2,2) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[2+min_index*3]*sig_dir[2+min_index*3] + (sig_var[itm_index]-plastic_str(1,1))*sig_dir[2+itm_index*3]*sig_dir[2+itm_index*3] + (sig_var[max_index]-plastic_str(2,2))*sig_dir[2+max_index*3]*sig_dir[2+max_index*3]);
 
             // Updating new stress to grid function
-            viscosity = plastic_viscosity[mat];
+            viscosity = plastic_viscosity_c;
             // viscosity = 10000.0; 
             // viscosity = 0.0;  // rate_independent
             // viscosity = 1.0e+38; //  elastic
@@ -289,7 +330,8 @@ namespace mfem
 
             if(viscoplastic)
             {
-               depls = (1 - relax)*depls; 
+               // depls = (1 - relax)*depls; 
+               depls = dt_scaled*depls/(1.0+dt_scaled); 
                p_gf[i] += depls;
             }
             else

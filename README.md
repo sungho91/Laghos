@@ -15,14 +15,20 @@
 time-dependent momentum balance of geological media in a moving
 Lagrangian frame using unstructured high-order finite element spatial
 discretization and explicit high-order time-stepping.
+[MFEM](http://mfem.org) is a modular parallel C++ library to enable high-performance scalable finite element discretization. 
+LAGHOST extends the capabilities of the [Laghos](https://github.com/CEED/Laghos) (Lagrangian High-Order Solver) one of mini-apps of MFEM, which solves 
+the time-dependent Euler equations of compressible gas dynamics in a moving Lagrangian frame 
+using high-order finite element spatial discretization and explicit time-stepping (Runge-Kutta method).
 
-Laghost is based on the discretization method described in the following article:
-
-> V. Dobrev, Tz. Kolev and R. Rieben <br>
+> Veselin A. Dobrev, Tzanio V. Kolev, and Robert N. Riebenn <br>
 > [High-order curvilinear finite element methods for Lagrangian hydrodynamics](https://doi.org/10.1137/120864672) <br>
 > *SIAM Journal on Scientific Computing*, (34) 2012, pp. B606–B641.
 
-Laghos captures the basic structure of many compressible shock hydrocodes,
+> Robert W. Anderson, Veselin A. Dobrev, Tzanio V. Kolev, Robert N. Rieben, and Vladimir Z. <br>
+> [High-Order Multi-Material ALE Hydrodynamics](https://doi.org/10.1137/17M1116453) <br>
+> *Computational Methods in Science and Engineering*, (40) 2018.
+
+<!-- Laghos captures the basic structure of many compressible shock hydrocodes,
 including the [BLAST code](http://llnl.gov/casc/blast) at [Lawrence Livermore
 National Laboratory](http://llnl.gov). The miniapp is built on top of a general
 discretization library, [MFEM](http://mfem.org), thus separating the pointwise
@@ -40,17 +46,17 @@ organizations (Office of Science and the National Nuclear Security
 Administration) responsible for the planning and preparation of a
 [capable exascale ecosystem](https://exascaleproject.org/what-is-exascale),
 including software, applications, hardware, advanced system engineering and early
-testbed platforms, in support of the nation’s exascale computing imperative.
+testbed platforms, in support of the nation’s exascale computing imperative. -->
 
 ## Characteristics
 
-The problem that Laghos is solving is formulated as a big (block) system of
+The problem that Laghost is solving is formulated as a big (block) system of
 ordinary differential equations (ODEs) for the unknown (high-order) velocity,
-internal energy and mesh nodes (position). The left-hand side of this system of
-ODEs is controlled by *mass matrices* (one for velocity and one for energy),
+internal energy, stress and mesh nodes (position). The left-hand side of this system of
+ODEs is controlled by *mass matrices* (one for velocity and one for energy and stress),
 while the right-hand side is constructed from a *force matrix*.
 
-Laghos supports two options for deriving and solving the ODE system, namely the
+Laghost supports two options for deriving and solving the ODE system, namely the
 *full assembly* and the *partial assembly* methods. Partial assembly is the main
 algorithm of interest for high orders. For low orders (e.g. 2nd order in 3D),
 both algorithms are of interest.
@@ -63,22 +69,20 @@ necessary operations. As the local action is defined by utilizing the tensor
 structure of the finite element spaces, the amount of data storage, memory
 transfers, and FLOPs are lower (especially for higher orders).
 
-The Laghos implementation includes support for hardware devices, such
+The mother code, Laghos, implementation includes support for hardware devices, such
 as GPUs, and programming models, such as CUDA, OCCA, RAJA and OpenMP,
 based on [MFEM](http://mfem.org), version 4.1 or later. These device
 backends are selectable at runtime, see the `-d/--device` command-line
-option.
+option. So, Laghost share those capability, however, they are not tested enough yet.
 
-Other computational motives in Laghos include the following:
+Other computational motives in Laghost include the following:
 
 - Support for unstructured meshes, in 2D and 3D, with quadrilateral and
   hexahedral elements (triangular and tetrahedral elements can also be used, but
   with the less efficient full assembly option). Serial and parallel mesh
   refinement options can be set via a command-line flag.
-- Explicit time-stepping loop with a variety of time integrator options. Laghos
-  supports Runge-Kutta ODE solvers of orders 1, 2, 3, 4 and 6, as well as a
-  specialized Runge-Kutta method of order 2 that ensures exact energy
-  conservation on fully discrete level (RK2Avg).
+- Explicit time-stepping loop with a specialized Runge-Kutta method of order 2 
+  that ensures exact energy conservation on fully discrete level (RK2Avg).
 - Continuous and discontinuous high-order finite element discretization spaces
   of runtime-specified order.
 - Moving (high-order) meshes.
@@ -94,33 +98,49 @@ Other computational motives in Laghos include the following:
   preparation and the application costs are important for this operator.
 - Domain-decomposed MPI parallelism.
 - Optional in-situ visualization with [GLVis](http:/glvis.org) and data output
-  for visualization and data analysis with [VisIt](http://visit.llnl.gov).
+  for visualization and data analysis with [VisIt](http://visit.llnl.gov) and [ParaView](https://www.paraview.org/).
+- Rock rhelogies : Compressible elastic medium, Mohr-Coulomb rate-independnt and rate-independent plasticity, 
+  plastic softening based on accumulated plastic strain for cohesion, friction coefficient, and dilation coefficient.
+- Mass scaling for *mass matrices* to achieve year-length time step size.
+- Dynamic relaxation (a.k.a. Cundall's damping).
+- Enabling the application of a Winkler foundation or spring boundary condition for the bottom boundary.
+- Multi-material tracking based on composition field
+- Remeshing and improving the quality of high-order finite element meshes based on the TMOP (Target-Matrix Optimization Paradigm)
+- Remapping high-order continuous (velocity and mesh nodes) and discontinous variables (energy, stress, composition, plastic strain) 
+  from source mesh (before remeshing) to new mesh (after remeshing) 
+  using [GSLIB](https://mfem.org/howto/findpts/) and [Remhos](https://github.com/CEED/Remhos).
+- Input file system (default.cfg) based on boost library (1.42 or newer version).
 
-## Code Structure
+## Main Code Structure
 
-- The file `laghos.cpp` contains the main driver with the time integration loop
-  starting around line 609.
+- The file `laghost.cpp` contains the main driver with the time integration loop.
 - In each time step, the ODE system of interest is constructed and solved by
-  the class `LagrangianHydroOperator`, defined around line 544 of `laghos.cpp`
-  and implemented in files `laghos_solver.hpp` and `laghos_solver.cpp`.
+  the class `LagrangianGeoOperator`, defined in `laghost.cpp`
+  and implemented in files `laghost_solver.hpp` and `laghost_solver.cpp`.
+- In `LagrangianGeoOperator::RK2AvgSolver::Step`, `UpdateMesh`, `SolveVelocity`, `SolveEnergy`, and `SolveStress`
+  are sequentially called.
 - All quadrature-based computations are performed in the function
-  `LagrangianHydroOperator::UpdateQuadratureData` in `laghos_solver.cpp`.
+  `LagrangianGeoOperator::UpdateQuadratureData` in `laghost_solver.cpp`.
+- In `UpdateQuadratureData`, total stress and stress increment based on objective stress rate (Jaumann stress rate)
+  are calculated to construct work matrix `F_ij` (force x length; i and j for continous and discontinous space).
+- In `SolveVelocity`, a vector,`rhs`, is assembled by multiplying the work matrix `F_ij` and the unity vector of the discontinuous space. 
+  Then, taking the negative sign on the `rhs` vector and adding damping force, which is stored in a new vector based on the current force vector, the `rhs`.
 - Depending on the chosen option (`-pa` for partial assembly or `-fa` for full
-  assembly), the function `LagrangianHydroOperator::Mult` uses the corresponding
+  assembly), the function `LagrangianGeoOperator::Mult` uses the corresponding
   method to construct and solve the final ODE system.
 - The full assembly computations for all mass matrices are performed by the MFEM
   library, e.g., classes `MassIntegrator` and `VectorMassIntegrator`.  Full
   assembly of the ODE's right hand side is performed by utilizing the class
-  `ForceIntegrator` defined in `laghos_assembly.hpp`.
+  `ForceIntegrator` defined in `laghost_assembly.hpp`.
 - The partial assembly computations are performed by the classes
-  `ForcePAOperator` and `MassPAOperator` defined in `laghos_assembly.hpp`.
+  `ForcePAOperator` and `MassPAOperator` defined in `laghost_assembly.hpp`.
 - When partial assembly is used, the main computational kernels are the
   `Mult*` functions of the classes `MassPAOperator` and `ForcePAOperator`
-  implemented in file `laghos_assembly.cpp`. These functions have specific
+  implemented in file `laghost_assembly.cpp`. These functions have specific
   versions for quadrilateral and hexahedral elements.
 - The orders of the velocity and position (continuous kinematic space)
-  and the internal energy (discontinuous thermodynamic space) are given
-  by the `-ok` and `-ot` input parameters, respectively.
+  and the internal energy, stress, composition and plastic strain 
+  (discontinuous thermodynamic space) are given by the `-ok` and `-ot` input parameters, respectively.
 
 ## Building
 
@@ -132,14 +152,26 @@ Laghos has the following external dependencies:
 -  METIS, used for parallel domain decomposition (optional), we recommend [version 4.0.3](http://glaros.dtc.umn.edu/gkhome/fetch/sw/metis/OLD/metis-4.0.3.tar.gz) <br>
    http://glaros.dtc.umn.edu/gkhome/metis/metis/download
 
-- MFEM, used for (high-order) finite element discretization, its GitHub master branch <br>
-  https://github.com/mfem/mfem
+-  MFEM, used for (high-order) finite element discretization, its GitHub master branch, we recommend version 4.5 or newer version <br>
+   https://github.com/mfem/mfem
 
-To build the miniapp, first download *hypre* and METIS from the links above
-and put everything on the same level as the `Laghos` directory:
+- *boost*, used for input file system, we recommend version 1.42 or newer version<br>
+   https://www.boost.org/
+
+To build the Laghost, first download *hypre* and METIS from the links above
+and put everything on the same level as the `Laghost` directory:
 ```sh
 ~> ls
-Laghos/  hypre-2.11.2.tar.gz  metis-4.0.3.tar.gz
+Laghost/  hypre-2.11.2.tar.gz  metis-4.0.3.tar.gz
+```
+
+Build *boost*:
+```sh
+~> tar -zxvf boost_1_84_0.tar.gz
+~> cd boost_1_84_0/src/
+~/boost_1_84_0/src> ./bootstrap.sh
+~/boost_1_84_0/src> ./b2 --with-program_options -q
+~/boost_1_84_0/src> cd ..
 ```
 
 Build *hypre*:
@@ -169,37 +201,63 @@ Clone and build the parallel version of MFEM:
 ~> git clone https://github.com/mfem/mfem.git ./mfem
 ~> cd mfem/
 ~/mfem> git checkout master
-~/mfem> make parallel -j
+~/mfem> make parallel -j MFEM_USE_GSLIB=YES
 ~/mfem> cd ..
 ```
 The above uses the `master` branch of MFEM.
 See the [MFEM building page](http://mfem.org/building/) for additional details.
 
-(Optional) Clone and build GLVis:
+<!-- (Optional) Clone and build GLVis:
 ```sh
 ~> git clone https://github.com/GLVis/glvis.git ./glvis
 ~> cd glvis/
 ~/glvis> make
 ~/glvis> cd ..
 ```
-The easiest way to visualize Laghos results is to have GLVis running in a
+The easiest way to visualize Laghost results is to have GLVis running in a
 separate terminal. Then the `-vis` option in Laghos will stream results directly
 to the GLVis socket.
-
-Build Laghos
+ -->
+Build Laghost
 ```sh
-~> cd Laghos/
-~/Laghos> make -j
+~> cd Laghost/
+~/Laghost> make -j
 ```
-This can be followed by `make test` and `make install` to check and install the
+<!-- This can be followed by `make test` and `make install` to check and install the
 build respectively. See `make help` for additional options.
 
 See also the `make setup` target that can be used to automated the
-download and building of hypre, METIS and MFEM.
+download and building of hypre, METIS and MFEM. -->
+
+## Versions
+
+In addition to the main MPI-based CPU implementation in https://github.com/CEED/Laghost,
+the following versions of Laghost have been developed
+
+<!-- - **SERIAL** version in the [serial/](./serial/README.md) directory.
+- **AMR** version in the [amr/](./amr/README.md) directory.
+  This version supports dynamic adaptive mesh refinement.
+ -->
+## Contact
+
+You can reach the Laghost team by emailing slee29@memphis.edu or sungho91123@gmail.com or by leaving a
+comment in the [issue tracker](https://github.com/CEED/Laghost/issues).
+
+<!-- ## Copyright
+
+The following copyright applies to each file in the CEED software suite,
+unless otherwise stated in the file:
+
+> Copyright (c) 2017, Lawrence Livermore National Security, LLC. Produced at the
+> Lawrence Livermore National Laboratory. LLNL-CODE-734707. All Rights reserved.
+
+See files LICENSE and NOTICE for details. -->
+
 
 ## Running
+#### TBD
 
-#### Sedov blast
+<!-- #### Sedov blast
 
 The main problem of interest for Laghos is the Sedov blast wave (`-p 1`) with
 partial assembly option (`-pa`).
@@ -351,3 +409,4 @@ unless otherwise stated in the file:
 > Lawrence Livermore National Laboratory. LLNL-CODE-734707. All Rights reserved.
 
 See files LICENSE and NOTICE for details.
+ -->
