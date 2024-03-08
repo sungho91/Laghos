@@ -107,10 +107,10 @@ OBJECT_FILES = $(SOURCE_FILES:.cpp=.o)
 
 .SUFFIXES: .cpp .o
 .cpp.o:
-	cd $(<D); $(CCC) -c -ggdb -O0 $(<F)
+	cd $(<D); $(CCC) -c  -O0 $(<F)
 
 laghost: $(OBJECT_FILES) $(CONFIG_MK) $(MFEM_LIB_FILE)
-	$(MFEM_CXX) $(MFEM_LINK_FLAGS) -ggdb -O0  -o laghost $(OBJECT_FILES) $(LIBS)
+	$(MFEM_CXX) $(MFEM_LINK_FLAGS)  -O0  -o laghost $(OBJECT_FILES) $(LIBS)
 
 all:;@$(MAKE) -j $(NPROC) laghost
 

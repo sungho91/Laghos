@@ -196,14 +196,35 @@ Build METIS:
 This build is optional, as MFEM can be build without METIS by specifying
 `MFEM_USE_METIS = NO` below.
 
+Build GSLIB:
+```sh
+~> git clone https://github.com/CEED/GSLIB.git
+~> cd GSLIB
+~/GSLIB> make CC=mpicc
+~/GSLIB> cd ..
+~> ln -s GSLIB gslib
+```
+
 Clone and build the parallel version of MFEM:
 ```sh
 ~> git clone https://github.com/mfem/mfem.git ./mfem
 ~> cd mfem/
 ~/mfem> git checkout master
+~/mfem> cp ../Laghost/mfem_modification/vector* ./linalg/
 ~/mfem> make parallel -j MFEM_USE_GSLIB=YES
 ~/mfem> cd ..
 ```
+
+Clone and build the cuda version of MFEM:
+```sh
+~> git clone https://github.com/mfem/mfem.git ./mfem
+~> cd mfem/
+~/mfem> git checkout master
+~/mfem> cp ../Laghost/mfem_modification/vector* ./linalg/
+~/mfem> make pcuda -j MFEM_USE_GSLIB=YES
+~/mfem> cd ..
+```
+
 The above uses the `master` branch of MFEM.
 See the [MFEM building page](http://mfem.org/building/) for additional details.
 

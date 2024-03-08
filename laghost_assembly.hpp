@@ -71,6 +71,7 @@ struct QuadratureData
 
    // mass_scale
    double mscale;
+   double vbc_max_val;
 
    // gravity
    double gravity;
@@ -176,6 +177,29 @@ public:
    virtual void AssembleRHSElementVect(const FiniteElement &fe,
                                        ElementTransformation &Tr,
                                        Vector &elvect);
+};
+
+// Perform patiall assembly for the stress rate operator
+// This is the same as ForcePAOperator, but with different integrator   
+class StressPAOperator : public Operator
+{ 
+   private:
+   const int dim, NE;
+   const QuadratureData &qdata;
+   const ParFiniteElementSpace &H1, &L2;
+   const Operator *H1R, *L2R;
+   const IntegrationRule &ir1D;
+   const int D1D, Q1D, L1D, H1sz, L2sz;
+   const DofToQuad *L2D2Q, *H1D2Q;
+   mutable Vector X, Y; 
+   public:
+   StressPAOperator(const QuadratureData&,
+                   ParFiniteElementSpace&,
+                   ParFiniteElementSpace&,
+                   const IntegrationRule&);
+   virtual void Mult(const Vector&, Vector&) const;
+   virtual void MultTranspose(const Vector&, Vector&) const;
+   virtual void MultTranspose(const Vector&, Vector&, const int&) const;
 };
 
 // Performs partial assembly for the force operator.

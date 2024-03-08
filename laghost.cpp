@@ -167,21 +167,15 @@ int main(int argc, char *argv[])
 
    // Remeshing performs using the Target-Matrix Optimization Paradigm (TMOP)
    bool mesh_changed = false;
-   bool ini_lithostatic = false;
    // int  multi_comp   = 0;
-   int  n_dt   = 50;
-   //
-   double itime{1.0e-100};
    // time_reduction{0.25};
 
    // parameter for surface topography
    // bool surface_diff = param.control.surf_proc;
    double alpha = 0.0;
    // double kappa = param.control.surf_diff;
-   double dummy = 0.0;
-   double ave_topo_top = 0.0;
-   double ave_topo_bot = 0.0;
    double cond_num =1.0;
+   double max_vbc_val = 1.0/10000/86400/365.25; // lower limit of maximum velocity is 0.1 mm/yr to prevent inf. mass scaling. 
 
    // Let some options be overwritten by command-line options.
    args.AddOption(&param.sim.dim, "-dim", "--dimension", "Dimension of the problem.");
@@ -728,7 +722,9 @@ int main(int argc, char *argv[])
    // Define the parallel finite element spaces. We use:
    // - H1 (Gauss-Lobatto, continuous) for position and velocity.
    // - L2 (Bernstein, discontinuous) for specific internal energy.
-   L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::Positive);
+   // L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::Positive); // Bernstein polynomials.
+   // L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::GaussLegendre); // Open type.
+   L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::GaussLobatto); // Closed type.
    H1_FECollection H1FEC(param.mesh.order_v, dim);
    ParFiniteElementSpace L2FESpace(pmesh, &L2FEC);
    ParFiniteElementSpace H1FESpace(pmesh, &H1FEC, pmesh->Dimension());
@@ -812,6 +808,8 @@ int main(int argc, char *argv[])
    {v_unit = v_unit/1000.0;}
    else if(param.bc.bc_unit =="m/s")
    {v_unit = v_unit*1.0;}
+   else if(param.bc.bc_unit =="cm/s")
+   {v_unit = v_unit*0.01;}
 
    // Dirichlet type boundary condition (i.e., fixing velocity component at boundaries)
    Array<int> ess_tdofs, ess_vdofs;
@@ -983,18 +981,15 @@ int main(int argc, char *argv[])
    // - 1 -> velocity
    // - 2 -> specific internal energy
    // - 3 -> stress
-   // - 4 -> plastic strain
    const int Vsize_l2 = L2FESpace.GetVSize();
    const int Vsize_h1 = H1FESpace.GetVSize();
-   // Array<int> offset(5);
-   Array<int> offset(6); // when you change this number, you should chnage block offset in solver.cpp too
+   Array<int> offset(5); // when you change this number, you should chnage block offset in solver.cpp too
    offset[0] = 0;
    offset[1] = offset[0] + Vsize_h1;
    offset[2] = offset[1] + Vsize_h1;
    offset[3] = offset[2] + Vsize_l2;
    offset[4] = offset[3] + Vsize_l2*3*(dim-1);
-   offset[5] = offset[4] + Vsize_h1;
-   // offset[5] = offset[4] + Vsize_l2;
+   // offset[5] = offset[4] + Vsize_h1;
    BlockVector S(offset, Device::GetMemoryType());
 
    // Define GridFunction objects for the position, velocity and specific
@@ -1002,18 +997,13 @@ int main(int argc, char *argv[])
    // compute the density values given the current mesh position, using the
    // property of pointwise mass conservation.
    ParGridFunction x_gf, v_gf, e_gf, s_gf;
-   ParGridFunction x_ini_gf;
    x_gf.MakeRef(&H1FESpace, S, offset[0]);
    v_gf.MakeRef(&H1FESpace, S, offset[1]);
    e_gf.MakeRef(&L2FESpace, S, offset[2]);
    s_gf.MakeRef(&L2FESpace_stress, S, offset[3]);
-   x_ini_gf.MakeRef(&H1FESpace, S, offset[4]);
-
-   // Initialize x_gf using the starting mesh coordinates.
    pmesh->SetNodalGridFunction(&x_gf);
    // Sync the data location of x_gf with its base, S
    x_gf.SyncAliasMemory(S);
-
 
    // Create a "sub mesh" from the boundary elements with attribute 3 (top boundary) for Surface process
    Array<int> bdr_attrs(1);
@@ -1101,7 +1091,7 @@ int main(int argc, char *argv[])
    // Define a GridFunction for all geometric parameters associated with the
    // mesh.
    ParFiniteElementSpace L2FESpace_geometric(pmesh, &L2FEC, nTotalParams); // must order byNodes
-   ParGridFunction quality(&L2FESpace_geometric);
+   ParGridFunction quality(&L2FESpace_geometric); ParGridFunction vol_ini_gf(&L2FESpace);
 
    DenseMatrix jacobian(dim);
    Vector geomParams(nTotalParams);
@@ -1134,6 +1124,8 @@ int main(int argc, char *argv[])
       }
       quality.SetSubVector(vdofs, allVals);
    }
+
+   for (int i = 0; i < vol_ini_gf.Size(); i++){vol_ini_gf[i] = quality[i];}
    
 
    // Initialize the velocity.
@@ -1143,10 +1135,15 @@ int main(int argc, char *argv[])
    v_gf.ProjectCoefficient(v_coeff);
 
    for (int i = 0; i < bc_id.size(); ++i) 
+   // for (int i = bc_id.size() -1; i > -1; --i) 
    {
       Array<int> ess_bdr(pmesh->bdr_attributes.Max()), dofs_marker, dofs_list1, dofs_list2, dofs_list3;
       if(bc_id[i] > 0)
       {
+         
+         if(dim == 2){max_vbc_val = std::max(max_vbc_val,  sqrt(pow(v_unit*bc_vx[i], 2) + pow(v_unit*bc_vy[i], 2)));}
+         else{max_vbc_val = std::max(max_vbc_val,  sqrt(pow(v_unit*bc_vx[i], 2) + pow(v_unit*bc_vy[i], 2) + pow(v_unit*bc_vz[i], 2)));}
+
          ess_bdr = 0;
          if(dim == 2)
          {
@@ -1211,6 +1208,8 @@ int main(int argc, char *argv[])
          }
       }
    }
+
+   
 
    // for (int i = 0; i < ess_vdofs.Size(); i++)
    // {
@@ -1448,6 +1447,7 @@ int main(int argc, char *argv[])
    ParGridFunction l2_rho0_gf(&l2_fes), l2_e(&l2_fes);
    l2_rho0_gf.ProjectCoefficient(rho0_coeff);
    rho0_gf.ProjectGridFunction(l2_rho0_gf);
+   // rho_ini_gf.ProjectGridFunction(l2_rho0_gf);
 
    /*
    ParGridFunction rho0_gf(&L2FESpace);
@@ -1533,7 +1533,7 @@ int main(int argc, char *argv[])
 
    // Composition
    ParFiniteElementSpace L2FESpace_mat(pmesh, &L2FEC, pmesh->attributes.Max()); // material composition 
-   ParGridFunction comp_gf(&L2FESpace_mat);
+   ParGridFunction comp_gf(&L2FESpace_mat); ParGridFunction comp_ref_gf(&L2FESpace_mat);
    comp_gf = 0.0;
 
    for (int i = 0; i < pmesh->attributes.Max(); i++)
@@ -1543,6 +1543,8 @@ int main(int argc, char *argv[])
          if(mat_gf[j] == i){comp_gf[j+e_gf.Size()*i] = 1.0;}
       }
    }
+
+   comp_ref_gf = comp_gf;
 
    // Material properties of Plasticity
    Vector tension_cutoff(pmesh->attributes.Max());
@@ -1685,9 +1687,10 @@ int main(int argc, char *argv[])
    ParGridFunction s_old_gf(&L2FESpace_stress);
    s_old_gf=0.0;
 
-   // Initial geometry
+   // Copy initial cooriante to x_gf
+   ParGridFunction x_ini_gf(&H1FESpace); 
    x_ini_gf = x_gf; 
-   x_ini_gf.SyncAliasMemory(S);
+   // x_ini_gf.SyncAliasMemory(S);
    ParGridFunction x_old_gf(&H1FESpace);
    x_old_gf = 0.0;
 
@@ -1797,7 +1800,7 @@ int main(int argc, char *argv[])
    // }
    if (param.solver.impose_visc) { visc = true; }
 
-   // std::cout << "calling LagrangianGeoOperator" << endl;
+   
    geodynamics::LagrangianGeoOperator geo(S.Size(),
                                           H1FESpace, L2FESpace, L2FESpace_stress, ess_tdofs,
                                           rho0_coeff, scale_rho0_coeff, rho0_gf,
@@ -1806,7 +1809,7 @@ int main(int argc, char *argv[])
                                           param.solver.cg_tol, param.solver.cg_max_iter, 
                                           param.solver.ftz_tol,
                                           param.mesh.order_q, lambda0_gf, mu0_gf, param.control.mscale, param.control.gravity, param.control.thickness,
-                                          param.control.winkler_foundation, param.control.winkler_rho, param.control.dyn_damping, param.control.dyn_factor, bc_id_pa);
+                                          param.control.winkler_foundation, param.control.winkler_rho, param.control.dyn_damping, param.control.dyn_factor, bc_id_pa, max_vbc_val);
     
 
    socketstream vis_rho, vis_v, vis_e;
@@ -1895,9 +1898,11 @@ int main(int argc, char *argv[])
    // defines the Mult() method that used by the time integrators.
    ode_solver->Init(geo);
    geo.ResetTimeStepEstimate();
-   double t = 0.0, dt = 0.0, t_old, dt_old = 0.0, h_min_ini = 1.0, h_min = 1.0;
-   dt = geo.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
-   h_min = geo.GetLengthEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
+   double t = 0.0, dt = 0.0, t_old, dt_old = 0.0, h_min = 1.0;
+   // dt = geo.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
+   // h_min = geo.GetLengthEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
+   dt = geo.GetTimeStepEstimate(S); // To provide dt before the estimate, initializing is necessary
+   h_min = geo.GetLengthEstimate(S); // To provide dt before the estimate, initializing is necessar
    dt = init_dt;
    bool last_step = false;
    int steps = 0;
@@ -1973,7 +1978,6 @@ int main(int argc, char *argv[])
       t_old = t;
       p_gf_old = p_gf; ini_p_old_gf = ini_p_gf;
       geo.ResetTimeStepEstimate();
-      if (ti == 50000){itime = dt;}
       // S is the vector of dofs, t is the current time, and dt is the time step
       // to advance.
       ode_solver->Step(S, t, dt);
@@ -1981,8 +1985,8 @@ int main(int argc, char *argv[])
       
       if(param.mat.plastic)
       {
-         // std::cout << dim << std::endl;
-         Returnmapping (comp_gf, s_gf, s_old_gf, p_gf, mat_gf, dim, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle0, friction_angle1, dilation_angle0, dilation_angle1, plastic_viscosity, dt_old);
+         if(dim == 2){Returnmapping2d (comp_gf, s_gf, s_old_gf, p_gf, mat_gf, dim, h_min, z_rho, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle0, friction_angle1, dilation_angle0, dilation_angle1, plastic_viscosity, param.mat.viscoplastic, dt_old);}
+         else{Returnmapping3d (comp_gf, s_gf, s_old_gf, p_gf, mat_gf, dim, h_min, z_rho, lambda, mu, tension_cutoff, cohesion0, cohesion1, pls0, pls1, friction_angle0, friction_angle1, dilation_angle0, dilation_angle1, plastic_viscosity, param.mat.viscoplastic, dt_old);}   
          n_p_gf  = ini_p_gf;
          n_p_gf -= p_gf;
          n_p_gf.Neg();
@@ -1997,6 +2001,21 @@ int main(int argc, char *argv[])
             {
                if ((ti % param.tmop.remesh_steps) == 0){cout << "*** calling remeshing due to constant remeshing step " << param.tmop.remesh_steps << endl;}
                else if (cond_num > param.tmop.time_reduction){cout << "*** calling remeshing due to aspect ratio is greater than " << param.tmop.time_reduction << endl;}
+            }
+
+            // mass balance
+            { 
+               // rho_gf = 0.0; lambda0_gf = 0.0; mu0_gf = 0.0;
+               for (int i = 0; i < pmesh->attributes.Max(); i++)
+               {
+                  for(int j = 0; j < vol_ini_gf.Size(); j++ )
+                  {
+                     comp_gf[j+vol_ini_gf.Size()*i] = comp_ref_gf[j+vol_ini_gf.Size()*i] * vol_ini_gf[j] / quality[j];
+                     // rho_gf[j] = rho_gf[j] + z_rho[i]*comp_gf[j+vol_ini_gf.Size()*i];
+                     // lambda0_gf[j] = lambda0_gf[j] + lambda[i]*comp_gf[j+vol_ini_gf.Size()*i];
+                     // mu0_gf[j] = mu0_gf[j] + mu[i]*comp_gf[j+vol_ini_gf.Size()*i];
+                  }
+               }
             }
 
             // param.tmop.time_reduction = param.tmop.time_reduction + 0.25;
@@ -2056,22 +2075,22 @@ int main(int argc, char *argv[])
                }
             }
 
-            ti = ti-1;
-            if (param.sim.visit)
-            {
-                  visit_dc.SetCycle(ti);
-                  visit_dc.SetTime(t*0.9999);
-                  visit_dc.Save();
-            }
+            // ti = ti-1;
+            // if (param.sim.visit)
+            // {
+            //       visit_dc.SetCycle(ti);
+            //       visit_dc.SetTime(t*0.9999);
+            //       visit_dc.Save();
+            // }
 
-            if (param.sim.paraview)
-            {
-                  pd->SetCycle(ti);
-                  pd->SetTime(t*0.9999);
-                  pd->Save();
-            }
+            // if (param.sim.paraview)
+            // {
+            //       pd->SetCycle(ti);
+            //       pd->SetTime(t*0.9999);
+            //       pd->Save();
+            // }
 
-            ti = ti+1;
+            // ti = ti+1;
 
             x_mod2_gf = x_mod_gf; // store streched initial mesh
 
@@ -2414,18 +2433,21 @@ int main(int argc, char *argv[])
                S1 =0.0; S2 =0.0; S3 =0.0; 
                S4 =0.0; S5 =0.0; S6 =0.0;
                ParGridFunction comps(&L2FESpace); comps =0.0;
-               // ParGridFunction rmass(&L2FESpace); rmass =1.0;
+               ParGridFunction rmass(&L2FESpace); rmass =1.0;
                double all_comp = 0.0;
 
                if(dim == 2){for(int i = 0; i < S1.Size(); i++ ){S1[i] = s_gf[i+S1.Size()*0];S2[i] = s_gf[i+S1.Size()*1];S3[i] = s_gf[i+S1.Size()*2];} }
                else{for(int i = 0; i < S1.Size(); i++ ){S1[i] = s_gf[i+S1.Size()*0];S2[i] = s_gf[i+S1.Size()*1];S3[i] = s_gf[i+S1.Size()*2]; S4[i] = s_gf[i+S1.Size()*3];S5[i] = s_gf[i+S1.Size()*4];S6[i] = s_gf[i+S1.Size()*5];}}
                
                if(myid==0){std::cout << "remapping for L2" << std::endl;}
+               
+               {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, rmass, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
+
                for (int i = 0; i < pmesh->attributes.Max(); i++)
                {
                   for(int j = 0; j < comps.Size(); j++ ){comps[j] = comp_gf[j+comps.Size()*i];}
                   {ParMesh *pmesh_old1 =  new ParMesh(*pmesh_old); Remapping(pmesh_old1, U, x_gf, comps, param.mesh.order_v, param.mesh.order_e, param.solver.p_assembly,param.mesh.local_refinement); delete pmesh_old1; U = x_old_gf;}
-                  for(int j = 0; j < comps.Size(); j++ ){comp_gf[j+comps.Size()*i] = comps[j];}
+                  for(int j = 0; j < comps.Size(); j++ ){comp_gf[j+comps.Size()*i] = comps[j]/rmass[j];}
                   comps =0.0;
                }
                //
@@ -2455,18 +2477,21 @@ int main(int argc, char *argv[])
                {
                   all_comp = 0.0;
                   for (int i = 0; i < pmesh->attributes.Max(); i++){all_comp = all_comp + comp_gf[j+comps.Size()*i];}
-                  e_gf[j] = e_gf[j]/all_comp; p_gf[j] = p_gf[j]/all_comp; ini_p_gf[j] = ini_p_gf[j]/all_comp;
+                  e_gf[j] = e_gf[j]/rmass[j]; p_gf[j] = p_gf[j]/rmass[j]; ini_p_gf[j] = ini_p_gf[j]/rmass[j];
                   for (int i = 0; i < pmesh->attributes.Max(); i++)
                   {
                     comp_gf[j+comps.Size()*i] = comp_gf[j+comps.Size()*i]/all_comp;
+                  //   comp_gf[j+comps.Size()*i] = comp_gf[j+comps.Size()*i]/rmass[j];
                     rho_gf[j] = rho_gf[j] + z_rho[i]*comp_gf[j+comps.Size()*i];
                     lambda0_gf[j] = lambda0_gf[j] + lambda[i]*comp_gf[j+comps.Size()*i];
                     mu0_gf[j] = mu0_gf[j] + mu[i]*comp_gf[j+comps.Size()*i];
                   }
 
-                  if(dim == 2){s_gf[j+S1.Size()*0]=S1[j]/all_comp;s_gf[j+S1.Size()*1]=S2[j]/all_comp;s_gf[j+S1.Size()*2]=S3[j]/all_comp;}
-                  else{s_gf[j+S1.Size()*0]=S1[j]/all_comp;s_gf[j+S1.Size()*1]=S2[j]/all_comp;s_gf[j+S1.Size()*2]=S3[j]/all_comp;s_gf[j+S1.Size()*3]=S4[j]/all_comp;s_gf[j+S1.Size()*4]=S5[j]/all_comp;s_gf[j+S1.Size()*5]=S6[j]/all_comp;}
+                  if(dim == 2){s_gf[j+S1.Size()*0]=S1[j]/rmass[j];s_gf[j+S1.Size()*1]=S2[j]/rmass[j];s_gf[j+S1.Size()*2]=S3[j]/rmass[j];}
+                  else{s_gf[j+S1.Size()*0]=S1[j]/rmass[j];s_gf[j+S1.Size()*1]=S2[j]/rmass[j];s_gf[j+S1.Size()*2]=S3[j]/rmass[j];s_gf[j+S1.Size()*3]=S4[j]/rmass[j];s_gf[j+S1.Size()*4]=S5[j]/rmass[j];s_gf[j+S1.Size()*5]=S6[j]/rmass[j];}
                }
+               
+               // rho_ini_gf = rho_gf;
 
                            
                // for(int i = 0; i < p_gf.Size(); i++ )
@@ -2520,6 +2545,9 @@ int main(int argc, char *argv[])
                }
                quality.SetSubVector(vdofs, allVals);
             }
+
+            for (int i = 0; i < vol_ini_gf.Size(); i++){vol_ini_gf[i] = quality[i];}
+            comp_ref_gf = comp_gf;
 
             Vector skew_vec(e_gf.Size());
             skew_vec = 1.0;
@@ -2585,8 +2613,12 @@ int main(int argc, char *argv[])
 
       // Adaptive time step control.
       // const double dt_est = geo.GetTimeStepEstimate(S, dt);
-      double dt_est = geo.GetTimeStepEstimate(S, dt);
-      h_min = geo.GetLengthEstimate(S, dt);
+      // double dt_est = geo.GetTimeStepEstimate(S, dt);
+      // h_min = geo.GetLengthEstimate(S, dt);
+
+      double dt_est = geo.GetTimeStepEstimate(S);
+      h_min = geo.GetLengthEstimate(S);
+
 
       // if(mesh_changed){mesh_changed=false; dt_est=dt_est*1e-5;}
 
@@ -2622,7 +2654,8 @@ int main(int argc, char *argv[])
          {
          // Repeat (solve again) with a decreased time step - decrease of the
          // time estimate suggests appearance of oscillations.
-         dt *= 0.50;
+         // dt *= 0.50;
+         dt  = dt_est; 
          // if (dt < std::numeric_limits<double>::epsilon())
          if (dt < 1.0E-38)
          { 
@@ -2724,7 +2757,6 @@ int main(int argc, char *argv[])
       v_gf.SyncAliasMemory(S);
       e_gf.SyncAliasMemory(S);
       s_gf.SyncAliasMemory(S);
-      x_ini_gf.SyncAliasMemory(S);
 
       s_old_gf = s_gf; // storing old Caushy stress
 
@@ -2733,11 +2765,6 @@ int main(int argc, char *argv[])
       // Make sure that the mesh corresponds to the new solution state. This is
       // needed, because some time integrators use different S-type vectors
       // and the oper object might have redirected the mesh positions to those.
-
-      // if(ini_lithostatic)
-      // {
-      //    pmesh->NewNodes(x_gf, false);
-      // }
 
       u_gf.Add(dt, v_gf);
 
@@ -2770,10 +2797,18 @@ int main(int argc, char *argv[])
             quality.SetSubVector(vdofs, allVals);
          }
 
+         Vector vol_vec(e_gf.Size());
          Vector skew_vec(e_gf.Size());
-         skew_vec = 1.0;
-         for(int i = 0; i < e_gf.Size(); i++){skew_vec[i] = quality[e_gf.Size() + i];}
+         vol_vec = 1.0; skew_vec = 1.0;
+         for(int i = 0; i < e_gf.Size(); i++){vol_vec[i] = quality[i]; skew_vec[i] = quality[e_gf.Size() + i];}
 
+         double local_min_vol = vol_vec.Min();
+         double global_min_vol;
+         MPI_Reduce(&local_min_vol, &global_min_vol, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+         MPI_Bcast(&global_min_vol, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+         if(global_min_vol < 0){MFEM_ABORT("Negative Jacobian (volume) occurs!");}
+         
          double local_max_skew = skew_vec.Max();
          double local_min_skew = skew_vec.Min();
          double global_max_skew;
@@ -2871,7 +2906,9 @@ int main(int argc, char *argv[])
                  << ", max_vel (cm/yr) = " << std::setw(5) << std::setprecision(3) << std::scientific
                  << global_max_vel*86400*365*100
                  << ", max_skew = " << std::setw(5) << std::setprecision(3) << std::scientific
-                 << cond_num;
+                 << cond_num
+                 << ", h_min = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << h_min;
             //  << ",\t|IE| = " << std::setprecision(10) << std::scientific
             //  << internal_energy
             //   << ",\t|KE| = " << std::setprecision(10) << std::scientific
@@ -2895,13 +2932,19 @@ int main(int argc, char *argv[])
             cout << std::fixed;
             cout << "step " << std::setw(5) << ti
                  << ",\tt = " << std::setw(5) << std::setprecision(4) << t
-                 << ",\tdt = " << std::setw(5) << std::setprecision(6) << dt
-                 << ",\t|e| = " << std::setprecision(10) << std::scientific
-                 << sqrt_norm;
-               //   << ",\t|IE| = " << std::setprecision(10) << std::scientific
-               //   << internal_energy
-               //   << ",\t|KE| = " << std::setprecision(10) << std::scientific
-               //   << kinetic_energy;
+                 << ",\tdt (sec) = " << std::setw(5) << std::setprecision(6) << std::scientific << dt
+                 << ",\t|e| = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << sqrt_norm
+                 << ", max_vel (m/sec) = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << global_max_vel*1
+                 << ", max_skew = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << cond_num
+                 << ", h_min = " << std::setw(5) << std::setprecision(3) << std::scientific
+                 << h_min;
+            //  << ",\t|IE| = " << std::setprecision(10) << std::scientific
+            //  << internal_energy
+            //   << ",\t|KE| = " << std::setprecision(10) << std::scientific
+            //  << kinetic_energy
             //   << ",\t|E| = " << std::setprecision(10) << std::scientific
             //  << kinetic_energy+internal_energy;
             cout << std::fixed;
@@ -3101,7 +3144,7 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
    offset[2] = offset[1] + Vsize_h1;
    offset[3] = offset[2] + Vsize_l2;
    offset[4] = offset[3] + Vsize_l2*3*(dim-1);
-   offset[5] = offset[4] + Vsize_h1;
+   // offset[5] = offset[4] + Vsize_h1;
 
    S_old = S;
    S.Update(offset);
@@ -3110,7 +3153,7 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
    v_gf.Update();
    e_gf.Update(); 
    s_gf.Update(); 
-   x_ini_gf.Update(); 
+   // x_ini_gf.Update(); 
 
    if(amr)
    {
@@ -3129,7 +3172,7 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
    v_gf.MakeRef(H1FESpace, S, offset[1]);
    e_gf.MakeRef(L2FESpace, S, offset[2]);
    s_gf.MakeRef(L2FESpace_stress, S, offset[3]);
-   x_ini_gf.MakeRef(H1FESpace, S, offset[4]);
+   // x_ini_gf.MakeRef(H1FESpace, S, offset[4]);
    S_old.Update(offset);
 
    // Gridfunction update (Non-blcok vector )

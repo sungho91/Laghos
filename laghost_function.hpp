@@ -43,7 +43,16 @@ namespace mfem
          if(dim == 2){ r = sqrt(pow((xc-location[0]), 2) + pow((yc-location[1]), 2));}
          else if(dim == 3){r = sqrt(pow((xc-location[0]), 2) + pow((yc-location[1]), 2) + pow((zc-location[2]), 2));}
 
-         if(r <= rad)
+         // if(r <= rad)
+         // {
+         //    K(0) = ini_pls;
+         // }
+         // else
+         // {
+         //    K(0) = 0.0;
+         // }
+
+         if((xc >= 49375.0) & (xc <= 50625.0) & (yc <= 1250.0))
          {
             K(0) = ini_pls;
          }
@@ -95,9 +104,10 @@ namespace mfem
          // double zc = z.GetValue(T, ip);
          double denc = rho.GetValue(T, ip);
          double atm = -101325; // 1 atm in Pa
+         atm =0.0;
 
          double radians = 10.0 * (M_PI / 180.0);
-         thickness = 35e3;
+         denc = 1560.0;
 
          K = 0.0;
          if(dim == 2)
@@ -105,13 +115,31 @@ namespace mfem
             K(0) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
             K(1) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
 
-            if(xc > 300e3)
-            {
-               thickness = 35e3 + (xc-300e3) * tan(radians);
+            // if(xc > 300e3/1e6)
+            // {
+            //    thickness = 35e3/1e6 + (xc-300e3/1e6) * tan(radians);
 
-               K(0) = -1.0*fabs(thickness - zc)*1560.0*gravity + atm;
-               K(1) = -1.0*fabs(thickness - zc)*1560.0*gravity + atm;
-            }
+            //    K(0) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            //    K(1) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            // }
+            // else
+            // {
+            //    K(0) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            //    K(1) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            // }
+
+            // if(xc > 300e3)
+            // {
+            //    thickness = 35e3 + (xc-300e3) * tan(radians);
+
+            //    K(0) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            //    K(1) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            // }
+            // else
+            // {
+            //    K(0) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            //    K(1) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
+            // }
          }
          else if(dim ==3)
          {
@@ -141,6 +169,7 @@ namespace mfem
          K.SetSize(3*(dim-1));
 
          double atm = -101325; // 1 atm in Pa
+         // atm =0.0;
          double zc = xyz.GetValue(T, ip, dim);
          
          K = 0.0;
