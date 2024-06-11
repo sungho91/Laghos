@@ -85,9 +85,11 @@ static void declare_parameters(po::options_description &cfg,
         ;
 
     cfg.add_options()
+        ("control.pseudo_transient", po::value<bool>(&p.control.pseudo_transient)->default_value(true)," ")
+        ("control.transient_num", po::value<int>(&p.control.transient_num)->default_value(5)," ")
         ("control.winkler_foundation", po::value<bool>(&p.control.winkler_foundation)->default_value(false)," ")
         ("control.winkler_flat", po::value<bool>(&p.control.winkler_flat)->default_value(false)," ")
-        ("control.flat_rate", po::value<double>(&p.control.flat_rate)->default_value(1.0e-7), " ")
+        // ("control.flat_rate", po::value<double>(&p.control.flat_rate)->default_value(1.0e-7), " ")
         ("control.lithostatic", po::value<bool>(&p.control.lithostatic)->default_value(true)," ")
         ("control.init_dt", po::value<double>(&p.control.init_dt)->default_value(1.0), " ")
         ("control.mscale", po::value<double>(&p.control.mscale)->default_value(5.0e5), " ")
@@ -99,6 +101,8 @@ static void declare_parameters(po::options_description &cfg,
         ("control.dyn_factor", po::value<double>(&p.control.dyn_factor)->default_value(0.8), " ")
         ("control.surf_proc", po::value<bool>(&p.control.surf_proc)->default_value(true)," ")
         ("control.surf_diff", po::value<double>(&p.control.surf_diff)->default_value(1.0e-7), " ")
+        ("control.bott_proc", po::value<bool>(&p.control.bott_proc)->default_value(true)," ")
+        ("control.bott_diff", po::value<double>(&p.control.bott_diff)->default_value(1.0e-7), " ")
         ;
 
     cfg.add_options()
@@ -111,6 +115,7 @@ static void declare_parameters(po::options_description &cfg,
         ("mesh.order_e", po::value<int>(&p.mesh.order_e)->default_value(1),"Order (degree) of the thermodynamic finite element space.")
         ("mesh.order_q", po::value<int>(&p.mesh.order_q)->default_value(-1),"Order  of the integration rule.")
         ("mesh.local_refinement", po::value<bool>(&p.mesh.local_refinement)->default_value(false), " ")
+        ("mesh.l2_basis", po::value<>(&p.mesh.l2_basis)->default_value(1)," ")
         ;
 
     cfg.add_options()
@@ -169,7 +174,7 @@ static void declare_parameters(po::options_description &cfg,
         ("tmop.mesh_node_ordering", po::value<int>(&p.tmop.mesh_node_ordering)->default_value(0), " ")
         ("tmop.barrier_type", po::value<int>(&p.tmop. barrier_type)->default_value(0), " ")
         ("tmop.worst_case_type", po::value<int>(&p.tmop.worst_case_type)->default_value(0), " ")
-        ("tmop.time_reduction", po::value<double>(&p.tmop.time_reduction)->default_value(0.5), " ")
+        ("tmop.tmop_cond_num", po::value<double>(&p.tmop.tmop_cond_num)->default_value(0.5), " ")
         ;
 }
 

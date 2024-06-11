@@ -94,9 +94,10 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
                                                  ParFiniteElementSpace &l2,
                                                  ParFiniteElementSpace &l2_stress,
                                                  const Array<int> &ess_tdofs,
-                                                 Coefficient &_rho0_coeff,
-                                                 Coefficient &scale_rho0_coeff,
+                                                //  Coefficient &_rho0_coeff,
+                                                //  Coefficient &_scale_rho0_coeff,
                                                  ParGridFunction &rho0_gf,
+                                                 ParGridFunction &fictitious_rho0_gf,
                                                  ParGridFunction &gamma_gf,
                                                  const int source,
                                                  const double cfl,
@@ -135,6 +136,7 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
    dyn_damping(dyn_damping),
    cg_rel_tol(cgt), cg_max_iter(cgiter),ftz_tol(ftz),
    rho0_gf(rho0_gf),
+   fictitious_rho0_gf(fictitious_rho0_gf),
    gamma_gf(gamma_gf),
    lambda_gf(lambda_gf),
    mu_gf(mu_gf),
@@ -144,9 +146,11 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
    // friction_angle(_friction_angle.Size()),
    // dilation_angle(_dilation_angle.Size()),
    Mv(&H1), Mv_spmat_copy(),
+   fic_Mv(&H1), fic_Mv_spmat_copy(),
    Me(l2dofs_cnt, l2dofs_cnt, NE),
    Me_inv(l2dofs_cnt, l2dofs_cnt, NE),
    rho0_coeff(&rho0_gf),
+   scale_rho0_coeff(&fictitious_rho0_gf),
    ir(IntRules.Get(pmesh->GetElementBaseGeometry(0),
                    (oq > 0) ? oq : 3 * H1.GetOrder(0) + L2.GetOrder(0) - 1)),
    Q1D(int(floor(0.7 + pow(ir.GetNPoints(), 1.0 / dim)))),
@@ -211,6 +215,7 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
       ForcePA = new ForcePAOperator(qdata, H1, L2, ir);
       StressPA = new StressPAOperator(qdata, H1, L2, ir); // stress rate operator, slee
       VMassPA = new MassPAOperator(H1c, ir, rho0_coeff);
+      // VMassPA = new MassPAOperator(H1c, ir, scale_rho0_coeff);
       EMassPA = new MassPAOperator(L2, ir, rho0_coeff);
       // Inside the above constructors for mass, there is reordering of the mesh
       // nodes which is performed on the host. Since the mesh nodes are a
@@ -305,10 +310,14 @@ LagrangianGeoOperator::LagrangianGeoOperator(const int size,
       // Standard assembly for the velocity mass matrix.
 
       VectorMassIntegrator *vmi = new VectorMassIntegrator(rho0_coeff, &ir);
-      // VectorMassIntegrator *vmi = new VectorMassIntegrator(scale_rho0_coeff, &ir);
       Mv.AddDomainIntegrator(vmi);
       Mv.Assemble();
       Mv_spmat_copy = Mv.SpMat();
+
+      VectorMassIntegrator *vmi_scale = new VectorMassIntegrator(scale_rho0_coeff, &ir);
+      fic_Mv.AddDomainIntegrator(vmi_scale);
+      fic_Mv.Assemble();
+      fic_Mv_spmat_copy = Mv.SpMat();
    }
 
    // Values of rho0DetJ0 and Jac0inv at all quadrature points.
@@ -408,7 +417,8 @@ void LagrangianGeoOperator::Mult(const Vector &S, Vector &dS_dt) const
    // Make sure that the mesh positions correspond to the ones in S. This is
    // needed only because some mfem time integrators don't update the solution
    // vector at every intermediate stage (hence they don't change the mesh).
-   UpdateMesh(S);
+   UpdateMesh(S); // comment out for testing pseudo transient loop
+
    // The monolithic BlockVector stores the unknown fields as follows:
    // (Position, Velocity, Specific Internal Energy).
    Vector* sptr = const_cast<Vector*>(&S);
@@ -416,15 +426,16 @@ void LagrangianGeoOperator::Mult(const Vector &S, Vector &dS_dt) const
    const int VsizeH1 = H1.GetVSize();
    v.MakeRef(&H1, *sptr, VsizeH1);
    // Set dx_dt = v (explicit).
-   ParGridFunction dx;
-   dx.MakeRef(&H1, dS_dt, 0);
-   dx = v;
-   int i = 0;
+   ParGridFunction dx; // comment out for testing pseudo transient loop
+   dx.MakeRef(&H1, dS_dt, 0); // comment out for testing pseudo transient loop
+   dx = v; // comment out for testing pseudo transient loop
+   
    SolveVelocity(S, dS_dt);
    SolveEnergy(S, v, dS_dt);
    SolveStress(S, dS_dt);
    qdata_is_current = false;
 }
+
 
 void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
 {
@@ -447,10 +458,10 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
 
    // double pseudo_speed = global_max_vel * mass_scale;
    double pseudo_speed = vbc_max_val * mass_scale;
-   double mfactor = (pseudo_speed * pseudo_speed) / bulkm;
+   double mfactor = (pseudo_speed * pseudo_speed) / bulkm; 
    if(mfactor > 1.0){mfactor = 1.0;} // if mass scaling is greater than unity, mass scaling is off.
    if(mass_scale == 1.0){mfactor = 1.0;} // no mass scaling
-
+   mfactor = mfactor * denm; // p_assembly requires small cfl < 0.5 (emperically)
    // The monolithic BlockVector stores the unknown fields as follows:
    // (Position, Velocity, Specific Internal Energy).
    ParGridFunction dv;
@@ -464,16 +475,17 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
    // Vector B, X; In AMR B and X should be redefined.
    one = 1.0; rhs = 0.0;
    B.HostRead();
+
+   // Body Force vector (F = 1 * g)
+   ParGridFunction accel_src_gf;
+   accel_src_gf.SetSpace(&H1);
+   GTCoefficient accel_coeff(dim);
+   accel_src_gf.ProjectCoefficient(accel_coeff);
+   accel_src_gf.Read();
+   accel_src_gf *= grav_mag;
+
    if (p_assembly)
    {
-      // Body Force vector (F = 1 * g)
-      ParGridFunction accel_src_gf;
-      accel_src_gf.SetSpace(&H1);
-      GTCoefficient accel_coeff(dim);
-      accel_src_gf.ProjectCoefficient(accel_coeff);
-      accel_src_gf.Read();
-      accel_src_gf *= grav_mag;
-
       // Damping vector (F = -1 * sign(v))
       ParGridFunction sign_gf;
       sign_gf.SetSpace(&H1);
@@ -486,6 +498,13 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
 
       if(winkler_foundation)
       {
+         // ParGridFunction x;
+         // x.MakeRef(&H1, *sptr, H1.GetVSize()*0);
+         // Vector WC(H1.GetVSize()); WC.UseDevice(true); 
+         // Vector WD(H1.GetVSize()); WD.UseDevice(true); 
+         // Vector WK(H1.GetVSize()); WK.UseDevice(true); 
+         // WC = x; WD = thickness; WC -= WD; WC.Neg(); 
+
          Array<int> nbc_bdr(pmesh->bdr_attributes.Max());   
          nbc_bdr = 0; nbc_bdr[2] = 1; // bottome boundary
          LinearForm winkler(&H1);
@@ -498,16 +517,18 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
 
          Vector pull_force(pmesh->bdr_attributes.Max());
          pull_force = 0.0;
-         pull_force(2) = winkler_rho*grav_mag;
+         pull_force(2) = 1.0;
          winkler_load.Set(dim-1, new PWConstCoefficient(pull_force));
 
          winkler.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(winkler_load), nbc_bdr);
          winkler.Assemble();
 
-         winkler.HostReadWrite();
          // Applying winkler      
          Winkler(S, winkler, thickness);
-         rhs.Add(1.0,  winkler);
+         rhs.Add(winkler_rho*grav_mag,  winkler);
+
+         // Multvv(WC, winkler, WK);
+         // rhs.Add(winkler_rho*grav_mag,  WK);
       }
 
       // Partial assembly solve for each velocity component
@@ -532,24 +553,35 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
             B += BA; // -(F + rho*g)
          }
          
+         // // Applying damping for all forces such internal, external, and body
+         // if(dyn_damping)
+         // {
+         //    ParGridFunction sign_comp;
+         //    sign_comp.MakeRef(&H1c, sign_gf, c*size);
+         //    Vector AC; sign_comp.GetTrueDofs(AC);
+         //    AC.Signcopy(); AC.Neg();
+         //    Vector damping(B.Size()); Vector sdamping(B.Size());  
+         //    damping.UseDevice(true); sdamping.UseDevice(true);
+         //    damping = 0.0; damping += B; sdamping = 0.0;
+         //    damping.Abs(); damping *=dyn_factor;
+         //    Multvv(AC, damping, sdamping);
+         //    damping.HostReadWrite(); sdamping.HostReadWrite();
+         //    B += sdamping;
+            
+         //    // Getdamping_comp(S, c, damping);
+         //    // B += damping;
+         // }
+
          // Applying damping for all forces such internal, external, and body
          if(dyn_damping)
          {
-            ParGridFunction sign_comp;
-            sign_comp.MakeRef(&H1c, sign_gf, c*size);
-            Vector AC; sign_comp.GetTrueDofs(AC);
-            AC.Signcopy(); AC.Neg();
-            Vector damping(B.Size()); Vector sdamping(B.Size());  
-            damping.UseDevice(true); sdamping.UseDevice(true);
-            damping = 0.0; damping += B; sdamping = 0.0;
-            damping.Abs(); damping *=dyn_factor;
-            Multvv(AC, damping, sdamping);
-            damping.HostReadWrite(); sdamping.HostReadWrite();
-            // Getdamping_comp(S, c, damping);
-            // B += damping;
-            B += sdamping;
+            Vector damping(B.Size());
+            damping=0.0;
+            damping.Add(1.0, B);
+            Getdamping_comp(S, c, damping);
+            B.Add(dyn_factor, damping);
          }
-
+         
          H1c.GetRestrictionMatrix()->Mult(dvc_gf, X);
          VMassPA->SetEssentialTrueDofs(c_tdofs[c]);
          VMassPA->EliminateRHS(B);
@@ -575,10 +607,14 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
       rhs.Neg();
       // rhs += *v_source; 
 
-      // Applying body force
-      Body_Force.Update();
-      Body_Force.Assemble();
-      rhs.Add(1.0,  Body_Force);
+      // // Applying body force
+      // Body_Force.Update();
+      // Body_Force.Assemble();
+      // rhs.Add(1.0,  Body_Force);
+
+      Vector rhs_accel(rhs.Size());
+      Mv_spmat_copy.Mult(accel_src_gf, rhs_accel);
+      rhs += rhs_accel; 
 
       if(winkler_foundation)
       {
@@ -594,7 +630,7 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
 
          Vector pull_force(pmesh->bdr_attributes.Max());
          pull_force = 0.0;
-         pull_force(2) = winkler_rho*grav_mag;
+         pull_force(2) = 1.0;
          winkler_load.Set(dim-1, new PWConstCoefficient(pull_force));
 
          winkler.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(winkler_load), nbc_bdr);
@@ -602,11 +638,12 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
 
          // Applying winkler      
          Winkler(S, winkler, thickness);
-         rhs.Add(1.0,  winkler);
+         rhs.Add(winkler_rho*grav_mag,  winkler);
       }
 
       HypreParMatrix A;
-      Mv.FormLinearSystem(ess_tdofs, dv, rhs, A, X, B);
+      // Mv.FormLinearSystem(ess_tdofs, dv, rhs, A, X, B);
+      fic_Mv.FormLinearSystem(ess_tdofs, dv, rhs, A, X, B);
 
       // Applying damping for all forces such internal, external, and body
       if(dyn_damping)
@@ -632,9 +669,10 @@ void LagrangianGeoOperator::SolveVelocity(const Vector &S, Vector &dS_dt) const
       timer.sw_cgH1.Start();
       cg.Mult(B, X);
       timer.sw_cgH1.Stop();
-      X*=mfactor;
+      // X*=mfactor;
       timer.H1iter += cg.GetNumIterations();
-      Mv.RecoverFEMSolution(X, rhs, dv);
+      // Mv.RecoverFEMSolution(X, rhs, dv);
+      fic_Mv.RecoverFEMSolution(X, rhs, dv);
    }
 }
 
@@ -670,6 +708,21 @@ void LagrangianGeoOperator::SolveEnergy(const Vector &S, const Vector &v, Vector
       e_source->Assemble();
    }
 
+   // TODO
+   // MassIntegrator mi(&ir);
+   // Me.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
+   // Me_inv.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
+   // MassIntegrator mi(rho0_coeff, &ir);
+      // for (int e = 0; e < NE; e++)
+      // {
+      //    DenseMatrixInverse inv(&Me(e));
+      //    const FiniteElement &fe = *L2.GetFE(e);
+      //    ElementTransformation &Tr = *L2.GetElementTransformation(e);
+      //    mi.AssembleElementMatrix(fe, Tr, Me(e));
+      //    inv.Factor();
+      //    inv.GetInverseMatrix(Me_inv(e));
+      // }
+      
    Array<int> l2dofs;
    if (p_assembly)
    {
@@ -921,7 +974,13 @@ void LagrangianGeoOperator::Winkler(const Vector &S, Vector &_winkler, double &_
    // x_ini.MakeRef(&H1, *sptr, H1.GetVSize()*2 + L2.GetVSize() + L2.GetVSize()*3*(dim-1));
    for( int i = 0; i < _winkler.Size(); i++ )
    {
-      _winkler[i]=-1.0*(x[i]-(bottom + _thickness))*_winkler[i]; //
+      
+      // _winkler[i]=-1.0*(x[i]-(bottom + _thickness))*_winkler[i]; //
+      _winkler[i]= (_thickness - x[i])*_winkler[i];
+      
+      // p = var.compensation_pressure -
+      //               (var.mat->rho(e) + param.bc.winkler_delta_rho) *
+      //               param.control.gravity * (zcenter + param.mesh.zlength);
    }
 }
 
@@ -2129,15 +2188,72 @@ void LagrangianGeoOperator::GetErrorEstimates(ParGridFunction &e_gf, Vector & er
 }
 
 
+// void LagrangianGeoOperator::TMOPUpdate(const Vector &S, bool quick)
+// {
+   
+//    ParMesh *pmesh = H1.GetParMesh();
+//    width = height = S.Size();
+
+//    Vector* sptr = const_cast<Vector*>(&S);
+//    ParGridFunction x_ini;
+//    x_ini.MakeRef(&H1, *sptr, H1.GetVSize()*2 + L2.GetVSize() + L2.GetVSize()*3*(dim-1));
+   
+//    // Element number update
+//    NE = pmesh->GetNE();
+//    const int NQ = ir.GetNPoints();
+
+//    if (quick) { return; }
+   
+//    // go back to initial mesh configuration temporarily
+//    int own_nodes = 0;
+//    GridFunction *x_gf = &x_ini;
+//    pmesh->SwapNodes(x_gf, own_nodes);
+
+//    // update mass matrix
+//    Mv.Update();
+//    Mv.Assemble();
+//    // Mv_spmat_copy = Mv.SpMat();
+
+//    // update force matrix
+//    Force.Update();
+//    Force.Assemble();
+//    Force = 0.0;
+   
+//    // // Standard local assembly and inversion for energy mass matrices.
+//    // // 'Me' is used in the computation of the internal energy
+//    // // which is used twice: once at the start and once at the end of the run.
+//    {
+//       Me.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
+//       Me_inv.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
+//       MassIntegrator mi(rho0_coeff, &ir);
+//       for (int e = 0; e < NE; e++)
+//       {
+//          DenseMatrixInverse inv(&Me(e));
+//          const FiniteElement &fe = *L2.GetFE(e);
+//          ElementTransformation &Tr = *L2.GetElementTransformation(e);
+//          mi.AssembleElementMatrix(fe, Tr, Me(e));
+//          inv.Factor();
+//          inv.GetInverseMatrix(Me_inv(e));
+//       }
+//    }
+   
+//    // resize quadrature data and make sure 'stressJinvT' will be recomputed
+//    qdata.Resize(dim, NE, NQ);
+//    qdata_is_current = false;
+//    // swap back to deformed mesh configuration
+//    pmesh->SwapNodes(x_gf, own_nodes);
+//    // Force.Assemble();
+
+//    block_offsets[0] = 0;
+//    block_offsets[1] = block_offsets[0] + H1.GetVSize();
+//    block_offsets[2] = block_offsets[1] + H1.GetVSize();
+//    block_offsets[3] = block_offsets[2] + L2.GetVSize();
+//    block_offsets[4] = block_offsets[3] + L2.GetVSize()*3*(dim-1);
+//    // block_offsets[5] = block_offsets[4] + H1.GetVSize();
+// }
+
 void LagrangianGeoOperator::TMOPUpdate(const Vector &S, bool quick)
 {
-   /*
-   ParMesh *pmesh = H1.GetParMesh();
-   width = height = S.Size();
-
-   Vector* sptr = const_cast<Vector*>(&S);
-   ParGridFunction x_ini;
-   x_ini.MakeRef(&H1, *sptr, H1.GetVSize()*2 + L2.GetVSize() + L2.GetVSize()*3*(dim-1));
    
    // Element number update
    NE = pmesh->GetNE();
@@ -2145,28 +2261,21 @@ void LagrangianGeoOperator::TMOPUpdate(const Vector &S, bool quick)
 
    if (quick) { return; }
    
-   // go back to initial mesh configuration temporarily
-   int own_nodes = 0;
-   GridFunction *x_gf = &x_ini;
-   pmesh->SwapNodes(x_gf, own_nodes);
-
    // update mass matrix
    Mv.Update();
    Mv.Assemble();
-   // Mv_spmat_copy = Mv.SpMat();
+   Mv_spmat_copy = Mv.SpMat();
 
-   // update force matrix
-   Force.Update();
-   Force.Assemble();
-   Force = 0.0;
-   
-   // // Standard local assembly and inversion for energy mass matrices.
-   // // 'Me' is used in the computation of the internal energy
-   // // which is used twice: once at the start and once at the end of the run.
+   // update mass matrix
+   fic_Mv.Update();
+   fic_Mv.Assemble();
+   fic_Mv_spmat_copy = Mv.SpMat();
+
    {
-      Me.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
-      Me_inv.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
+      // Me.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
+      // Me_inv.SetSize(l2dofs_cnt, l2dofs_cnt, NE);
       MassIntegrator mi(rho0_coeff, &ir);
+      // MassIntegrator mi(scale_rho0_coeff, &ir);
       for (int e = 0; e < NE; e++)
       {
          DenseMatrixInverse inv(&Me(e));
@@ -2177,21 +2286,27 @@ void LagrangianGeoOperator::TMOPUpdate(const Vector &S, bool quick)
          inv.GetInverseMatrix(Me_inv(e));
       }
    }
-   
-   // resize quadrature data and make sure 'stressJinvT' will be recomputed
-   qdata.Resize(dim, NE, NQ);
-   qdata_is_current = false;
-   // swap back to deformed mesh configuration
-   pmesh->SwapNodes(x_gf, own_nodes);
-   // Force.Assemble();
 
-   block_offsets[0] = 0;
-   block_offsets[1] = block_offsets[0] + H1.GetVSize();
-   block_offsets[2] = block_offsets[1] + H1.GetVSize();
-   block_offsets[3] = block_offsets[2] + L2.GetVSize();
-   block_offsets[4] = block_offsets[3] + L2.GetVSize()*3*(dim-1);
-   // block_offsets[5] = block_offsets[4] + H1.GetVSize();
-   */
+   // update 'rho0DetJ0' and 'Jac0inv' at all quadrature points
+   // TODO: remove code duplication
+   Vector rho_vals(NQ);
+   for (int i = 0; i < NE; i++)
+   {
+      rho0_gf.GetValues(i, ir, rho_vals);
+      ElementTransformation *T = H1.GetElementTransformation(i);
+      for (int q = 0; q < NQ; q++)
+      {
+         const IntegrationPoint &ip = ir.IntPoint(q);
+         T->SetIntPoint(&ip);
+
+         DenseMatrixInverse Jinv(T->Jacobian());
+         Jinv.GetInverseMatrix(qdata.Jac0inv(i*NQ + q));
+
+         const double rho0DetJ0 = T->Weight() * rho_vals(q);
+         qdata.rho0DetJ0w(i*NQ + q) = rho0DetJ0 *
+                                           ir.IntPoint(q).weight;
+      }
+   }
 }
 
 

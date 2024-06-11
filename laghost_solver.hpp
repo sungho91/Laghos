@@ -160,6 +160,7 @@ protected:
    // ParGridFunction x0_gf; // copy of initial mesh position
 
    ParGridFunction &rho0_gf;
+   ParGridFunction &fictitious_rho0_gf;
    // ParGridFunction x0_gf; // copy of initial mesh position
 
    const Array<int> &ess_tdofs;
@@ -180,11 +181,16 @@ protected:
    // Velocity mass matrix and local inverses of the energy mass matrices. These
    // are constant in time, due to the pointwise mass conservation property.
    mutable ParBilinearForm Mv;
-   SparseMatrix Mv_spmat_copy;
-   DenseTensor Me, Me_inv;
+   mutable SparseMatrix Mv_spmat_copy;
+   mutable ParBilinearForm fic_Mv;
+   mutable SparseMatrix fic_Mv_spmat_copy;
+
+   mutable DenseTensor Me, Me_inv;
 
    // 
    GridFunctionCoefficient rho0_coeff; // TODO: remove when Mv update improved
+   GridFunctionCoefficient scale_rho0_coeff; // TODO: remove when fic_Mv update improved
+   
    // DenseTensor Me, Me_inv;
    // Integration rule for all assemblies.
    const IntegrationRule &ir;
@@ -247,9 +253,10 @@ public:
                            ParFiniteElementSpace &l2_fes,
                            ParFiniteElementSpace &l2_stress_fes,
                            const Array<int> &ess_tdofs,
-                           Coefficient &rho0_coeff,
-                           Coefficient &scale_rho0_coeff,
+                           // Coefficient &rho0_coeff,
+                           // Coefficient &scale_rho0_coeff,
                            ParGridFunction &rho0_gf,
+                           ParGridFunction &fictitious_rho0_gf,
                            ParGridFunction &gamma_gf,
                            const int source,
                            const double cfl,

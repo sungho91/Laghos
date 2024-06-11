@@ -57,9 +57,11 @@ struct BC {
 
 
 struct Control {
+    bool   pseudo_transient;
+    int    transient_num;
     bool   winkler_foundation;
     bool   winkler_flat;
-    double flat_rate;
+    // double flat_rate;
     bool   lithostatic;
     double init_dt;
     double mscale;
@@ -71,6 +73,8 @@ struct Control {
     double dyn_factor;
     bool   surf_proc;
     double surf_diff;
+    bool   bott_proc;
+    double bott_diff;
 };
 
 struct Mesh_param {
@@ -82,6 +86,7 @@ struct Mesh_param {
     int         order_e;
     int         order_q;
     bool        local_refinement;
+    int         l2_basis;
 };
 
 struct Mat {
@@ -157,7 +162,7 @@ struct TMOP {
     int    mesh_node_ordering;
     int    barrier_type;
     int    worst_case_type;
-    double time_reduction;
+    double tmop_cond_num;
 };
 
 struct Param {

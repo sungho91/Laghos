@@ -159,8 +159,10 @@ void Remapping(ParMesh *pmesh, ParGridFunction &x, ParGridFunction &x_mod, ParGr
    {
       if(myid==0){std::cout << "ncmesh" << std::endl;}
       ho_type           = HOSolverType::LocalInverse;
-      lo_type           = LOSolverType::MassBased;
-      fct_type          = FCTSolverType::FluxBased;
+      lo_type           = LOSolverType::None;
+      fct_type          = FCTSolverType::None;
+      // lo_type           = LOSolverType::MassBased;
+      // fct_type          = FCTSolverType::FluxBased;
    }
    
 

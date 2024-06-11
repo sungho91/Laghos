@@ -341,7 +341,8 @@ namespace mfem
             }
             else
             {
-               p_gf[i] += depls;
+               // p_gf[i] += depls;
+               p_gf[i] += std::fabs(depls);
             }
             
       }
@@ -591,7 +592,7 @@ namespace mfem
             }
             else
             {
-               p_gf[i] += depls;
+               p_gf[i] += std::fabs(depls);
             }
             
       }

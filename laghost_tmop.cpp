@@ -722,8 +722,12 @@ namespace mfem
          //             "Boundary attribute 3 must be used only for 3D meshes. "
          //             "Adjust the attributes (1/2/3/4 for fixed x/y/z/all "
          //             "components, rest for free nodes), or use -fix-bnd.");
-         if (attr == 1 || attr == 2) { n += 1*nd; }
-         if (attr == 3 || attr == 4) { n += 2*nd; }
+         if (attr == 1 || attr == 2) { n += 1*nd; } // x
+         if (attr == 3 || attr == 4) { n += 1*nd; } // x and y
+
+         // if (attr == 1 || attr == 2) { n += 2*nd; } // x and y
+         // if (attr == 3 || attr == 4) { n += 1*nd; } // x and y
+         
          
          // if (attr == 1 || attr == 2 || attr == 3 || attr == 4 ) { n += nd; }
          // if (attr == 4) { n += nd * dim; }
@@ -749,14 +753,35 @@ namespace mfem
          }
          else if (attr == 3) // Fix x and y components.
          {
-            for (int j = 0; j < 2*nd; j++)
-            { ess_vdofs[n++] = vdofs[j]; }
+            for (int j = 0; j < 1*nd; j++)
+            { ess_vdofs[n++] = vdofs[j+nd]; }
          }
          else if (attr == 4) // Fix x and y components.
          {
-            for (int j = 0; j < 2*nd; j++)
-            { ess_vdofs[n++] = vdofs[j]; }
+            for (int j = 0; j < 1*nd; j++)
+            { ess_vdofs[n++] = vdofs[j+nd]; }
          }
+
+         // if (attr == 1) // Fix x and y components.
+         // {
+         //    for (int j = 0; j < 2*nd; j++)
+         //    { ess_vdofs[n++] = vdofs[j];}
+         // }
+         // else if (attr == 2) // Fix x and y components.
+         // {
+         //    for (int j = 0; j < 2*nd; j++)
+         //    { ess_vdofs[n++] = vdofs[j];}
+         // }
+         // else if (attr == 3) // Fix y components.
+         // {
+         //    for (int j = 0; j < nd; j++)
+         //    { ess_vdofs[n++] = vdofs[j+nd]; }
+         // }
+         // else if (attr == 4) // Fix y components.
+         // {
+         //    for (int j = 0; j < nd; j++)
+         //    { ess_vdofs[n++] = vdofs[j+nd]; }
+         // }
 
          // else if (attr == 3) // Fix y components.
          // {
