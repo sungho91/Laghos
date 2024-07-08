@@ -2600,7 +2600,7 @@ int main(int argc, char *argv[])
                }
 
                skew_vec.Add(-1.0, skew_ini_gf);
-               skew_vec.Abs();
+               // skew_vec.Abs();
 
                double local_min_vol = vol_vec.Min();
                MPI_Reduce(&local_min_vol, &global_min_vol, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
@@ -2608,7 +2608,8 @@ int main(int argc, char *argv[])
 
                if(global_min_vol < 0){MFEM_ABORT("Negative Jacobian (volume) occurs!");}
                
-               double local_max_skew = skew_vec.Max();
+               // double local_max_skew = skew_vec.Max();
+               double local_max_skew = std::max( skew_vec.Max(), -skew_vec.Min() );
                double global_max_skew;
                
                MPI_Reduce(&local_max_skew, &global_max_skew, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -2861,7 +2862,7 @@ int main(int argc, char *argv[])
          }
 
          skew_vec.Add(-1.0, skew_ini_gf);
-         skew_vec.Abs();
+         // skew_vec.Abs();
 
          double local_min_vol = vol_vec.Min();
          MPI_Reduce(&local_min_vol, &global_min_vol, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
@@ -2869,7 +2870,8 @@ int main(int argc, char *argv[])
 
          if(global_min_vol < 0){MFEM_ABORT("Negative Jacobian (volume) occurs!");}
          
-         double local_max_skew = skew_vec.Max();
+         // double local_max_skew = skew_vec.Max();
+         double local_max_skew = std::max( skew_vec.Max(), -skew_vec.Min() );
          double global_max_skew;
          
          MPI_Reduce(&local_max_skew, &global_max_skew, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
