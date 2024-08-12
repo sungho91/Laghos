@@ -59,7 +59,7 @@ namespace mfem
 
    public:
       PlasticCoefficient (int &_dim, ParGridFunction &_xyz, Vector &_location, double &_rad, double &_ini_pls)
-         : VectorCoefficient(_dim), xyz(_xyz)
+         : VectorCoefficient(1), xyz(_xyz)
          {
             dim=_dim; location = _location; rad = _rad; ini_pls = _ini_pls;
          }
@@ -151,7 +151,7 @@ namespace mfem
 
    public:
       LithostaticCoefficient (int &_dim, ParGridFunction &_xyz, ParGridFunction &_rho, double &_gravity, double &_thickness)
-         : VectorCoefficient(_dim), xyz(_xyz), rho(_rho)  
+         : VectorCoefficient(3*(_dim-1)), xyz(_xyz), rho(_rho)  
          {
             dim=_dim; gravity = _gravity; thickness = _thickness; 
          }
@@ -165,18 +165,8 @@ namespace mfem
          double atm = -101325; // 1 atm in Pa
 
          K = 0.0;
-         if(dim == 2)
-         {
-            K(0) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
-            K(1) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
-            // std::cout << -1.0*fabs(thickness - zc)*denc*gravity + atm << std::endl;
-         }
-         else if(dim ==3)
-         {
-            K(0) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
-            K(1) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
-            K(2) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
-         }
+         for (int i = 0; i < dim; i++)
+            K(i) = -1.0*fabs(thickness - zc)*denc*gravity + atm;
       }
       virtual ~LithostaticCoefficient() { }
    };
@@ -190,31 +180,22 @@ namespace mfem
 
    public:
       ATMCoefficient (int &_dim, ParGridFunction &_xyz, ParGridFunction &_rho, double &_gravity, double &_thickness)
-         : VectorCoefficient(_dim), xyz(_xyz), rho(_rho)  
+         : VectorCoefficient(3*(_dim-1)), xyz(_xyz), rho(_rho)  
          {
             dim=_dim; gravity = _gravity; thickness = _thickness; 
          }
       virtual void Eval(Vector &K, ElementTransformation &T, const IntegrationPoint &ip)
       {
          K.SetSize(3*(dim-1));
+         // K.SetSize(dim);
 
          double atm = -101325; // 1 atm in Pa
          // atm =0.0;
          double zc = xyz.GetValue(T, ip, dim);
-         
+         // 
          K = 0.0;
-         if(dim == 2)
-         {
-            K(0) = atm;
-            K(1) = atm;
-
-         }
-         else if(dim ==3)
-         {
-            K(0) = atm;
-            K(1) = atm;
-            K(2) = atm;
-         }
+         for (int i = 0; i < dim; i++)
+            K(i) = atm;
       }
       virtual ~ATMCoefficient() { }
    };

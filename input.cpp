@@ -85,7 +85,7 @@ static void declare_parameters(po::options_description &cfg,
         ;
 
     cfg.add_options()
-        ("control.pseudo_transient", po::value<bool>(&p.control.pseudo_transient)->default_value(true)," ")
+        ("control.pseudo_transient", po::value<bool>(&p.control.pseudo_transient)->default_value(false)," ")
         ("control.transient_num", po::value<int>(&p.control.transient_num)->default_value(5)," ")
         ("control.winkler_foundation", po::value<bool>(&p.control.winkler_foundation)->default_value(false)," ")
         ("control.winkler_flat", po::value<bool>(&p.control.winkler_flat)->default_value(false)," ")

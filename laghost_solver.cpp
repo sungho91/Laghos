@@ -1522,7 +1522,8 @@ void LagrangianGeoOperator::UpdateQuadratureData(const Vector &S) const
             if (min_detJ < 0.0)
             {
                // This will force repetition of the step with smaller dt.
-               qdata.dt_est = 0.0;
+               // qdata.dt_est = 0.0;
+               MFEM_ABORT("Negative min_detJ!");
             }
             else
             {

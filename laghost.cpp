@@ -1761,7 +1761,7 @@ int main(int argc, char *argv[])
 
    Vector ini_weakzone(pmesh->attributes.Max());
    for (int i = 0; i < pmesh->attributes.Max(); i++) {ini_weakzone[i] = 0.0;}
-   ini_weakzone[2] = 0.5;
+   ini_weakzone[pmesh->attributes.Max()-1] = 0.5;
    PWConstCoefficient weak_func(ini_weakzone);
 
    PlasticCoefficient p_coeff(dim, xyz_gf_l2, weak_location, param.mat.weak_rad, param.mat.ini_pls);

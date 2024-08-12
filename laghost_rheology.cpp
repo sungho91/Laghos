@@ -412,7 +412,8 @@ namespace mfem
       {  
             esig=0.0; plastic_sig=0.0; plastic_str=0.0;
             esig_old=0.0; esig_inc=0.0;
-            double eig_sig_var[2], eig_sig_vec[4];
+            // double eig_sig_var[2], eig_sig_vec[4];
+            Vector eig_sig_var(2), eig_sig_vec(4);
 
             // mat = mat_gf[i];
             pls_old = p_gf[i];
@@ -463,24 +464,25 @@ namespace mfem
             // Elastic stress increment
             esig_inc(0,0) = esig(0,0) - esig_old(0,0); esig_inc(0,1) = esig(0,1) - esig_old(0,1); 
             esig_inc(1,0) = esig(1,0) - esig_old(1,0); esig_inc(1,1) = esig(1,1) - esig_old(1,1); 
-            esig.CalcEigenvalues(eig_sig_var, eig_sig_vec); 
+            // esig.CalcEigenvalues(eig_sig_var, eig_sig_vec); 
+            esig.CalcEigenvalues(eig_sig_var.GetData(), eig_sig_vec.GetData()); 
 
-            Vector sig_var(eig_sig_var, 2);
-            Vector sig_dir(eig_sig_vec, 2);
+            // Vector sig_var(eig_sig_var, 2);
+            // Vector eig_sig_dir(eig_sig_vec, 4);
 
-            auto max_it = std::max_element(sig_var.begin(), sig_var.end()); // find iterator to max element
-            auto min_it = std::min_element(sig_var.begin(), sig_var.end()); // find iterator to min element
+            auto max_it = std::max_element(eig_sig_var.begin(), eig_sig_var.end()); // find iterator to max element
+            auto min_it = std::min_element(eig_sig_var.begin(), eig_sig_var.end()); // find iterator to min element
             
-            int max_index = std::distance(sig_var.begin(), max_it); // calculate index of max element
-            int min_index = std::distance(sig_var.begin(), min_it); // calculate index of min element
+            int max_index = std::distance(eig_sig_var.begin(), max_it); // calculate index of max element
+            int min_index = std::distance(eig_sig_var.begin(), min_it); // calculate index of min element
             
             // int itm_index = 0; // calculate index of intermediate element
             // if (max_index + min_index == 1) {itm_index = 2;}
             // else if(max_index + min_index == 2) {itm_index = 1;}
             // else {itm_index = 0;}
 
-            sig1 = sig_var[min_index]; // most compressive pincipal stress
-            sig3 = sig_var[max_index]; // least compressive pincipal stress
+            sig1 = eig_sig_var[min_index]; // most compressive pincipal stress
+            sig3 = eig_sig_var[max_index]; // least compressive pincipal stress
 
             // linear strain weaking on cohesion, friction and dilation angles.
             coh_str = cohesion0_c; fri_str = friction_angle0_c; dil_str = dilation_angle0_c;
@@ -548,10 +550,10 @@ namespace mfem
             }
 
             // Rotating Principal axis to XYZ axis
-            plastic_sig(0,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*2]*sig_dir[0+min_index*2]  + (sig_var[max_index]-plastic_str(1,1))*sig_dir[0+max_index*2]*sig_dir[0+max_index*2]);
-            plastic_sig(0,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[0+min_index*2]*sig_dir[1+min_index*2]  + (sig_var[max_index]-plastic_str(1,1))*sig_dir[0+max_index*2]*sig_dir[1+max_index*2]);
-            plastic_sig(1,0) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*2]*sig_dir[0+min_index*2]  + (sig_var[max_index]-plastic_str(1,1))*sig_dir[1+max_index*2]*sig_dir[0+max_index*2]);
-            plastic_sig(1,1) = ((sig_var[min_index]-plastic_str(0,0))*sig_dir[1+min_index*2]*sig_dir[1+min_index*2]  + (sig_var[max_index]-plastic_str(1,1))*sig_dir[1+max_index*2]*sig_dir[1+max_index*2]);
+            plastic_sig(0,0) = ((eig_sig_var[min_index]-plastic_str(0,0))*eig_sig_vec[0+min_index*2]*eig_sig_vec[0+min_index*2]  + (eig_sig_var[max_index]-plastic_str(1,1))*eig_sig_vec[0+max_index*2]*eig_sig_vec[0+max_index*2]);
+            plastic_sig(0,1) = ((eig_sig_var[min_index]-plastic_str(0,0))*eig_sig_vec[0+min_index*2]*eig_sig_vec[1+min_index*2]  + (eig_sig_var[max_index]-plastic_str(1,1))*eig_sig_vec[0+max_index*2]*eig_sig_vec[1+max_index*2]);
+            plastic_sig(1,0) = ((eig_sig_var[min_index]-plastic_str(0,0))*eig_sig_vec[1+min_index*2]*eig_sig_vec[0+min_index*2]  + (eig_sig_var[max_index]-plastic_str(1,1))*eig_sig_vec[1+max_index*2]*eig_sig_vec[0+max_index*2]);
+            plastic_sig(1,1) = ((eig_sig_var[min_index]-plastic_str(0,0))*eig_sig_vec[1+min_index*2]*eig_sig_vec[1+min_index*2]  + (eig_sig_var[max_index]-plastic_str(1,1))*eig_sig_vec[1+max_index*2]*eig_sig_vec[1+max_index*2]);
 
             // Updating new stress to grid function
             viscosity = plastic_viscosity_c;
