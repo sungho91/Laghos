@@ -46,38 +46,22 @@ struct Solver {
     bool   impose_visc;
 };
 
-struct BC {
-    // int_vec bc_ids;
-    std::string bc_unit;
-    std::string bc_ids;
-    std::string bc_vxs;
-    std::string bc_vys;
-    std::string bc_vzs;
-};
-
-
 struct Control {
     bool   pseudo_transient;
     int    transient_num;
-    bool   winkler_foundation;
-    bool   winkler_flat;
     // double flat_rate;
     bool   lithostatic;
     double init_dt;
     double mscale;
     double gravity; // magnitude 
     double thickness; // meter 
-    double winkler_rho; // Density of substratum
     bool   mass_bal;
     bool   dyn_damping;
     double dyn_factor;
-    bool   surf_proc;
-    double surf_diff;
-    bool   bott_proc;
-    double bott_diff;
+    double max_vbc_val;
 };
 
-struct Mesh_param {
+struct Meshing {
     std::string mesh_file;
     int         rs_levels;
     int         rp_levels;
@@ -87,6 +71,25 @@ struct Mesh_param {
     int         order_q;
     bool        local_refinement;
     int         l2_basis;
+};
+
+struct BC {
+    // int_vec bc_ids;
+    std::string bc_unit;
+    std::string bc_ids;
+    std::string bc_vxs;
+    std::string bc_vys;
+    std::string bc_vzs;
+
+    bool   winkler_foundation;
+    bool   winkler_flat;
+    double winkler_rho; // Density of substratum
+    bool   surf_proc;
+    double surf_diff;
+    double surf_alpha;
+    bool   base_proc;
+    double base_diff;
+    double base_alpha;
 };
 
 struct Mat {
@@ -169,7 +172,7 @@ struct Param {
     Sim sim;
     Solver solver;
     BC bc;
-    Mesh_param mesh;
+    Meshing mesh;
     Control control;
     Mat mat;
     TMOP tmop;

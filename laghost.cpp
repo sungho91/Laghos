@@ -54,12 +54,12 @@
 #include <fstream>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <cmath>
 #include "laghost_solver.hpp"
 #include "laghost_rheology.hpp"
 #include "laghost_function.hpp"
-#include <cmath>
-#include "parameters.hpp"
-#include "input.hpp"
+#include "laghost_parameters.hpp"
+#include "laghost_input.hpp"
 #include "laghost_tmop.hpp"
 #include "laghost_remhos.hpp"
 
@@ -139,12 +139,10 @@ int main(int argc, char *argv[])
    // Print the banner.
    if (mpi.Root()) { display_banner(cout); }
 
+   // Take care of input parameters given in a file or command line.
    OptionsParser args(argc, argv);
-   const char *input_parameter_file = "./defaults.cfg";
-   args.AddOption(&input_parameter_file, "-i", "--input", "Input parameter file to use.");
-
    Param param;
-   get_input_parameters(input_parameter_file, param);
+   read_and_assign_input_parameters( args, param, myid );
 
    Array<int> cxyz; // Leave undefined. It won't be used.
    double init_dt = 1.0;
@@ -171,239 +169,8 @@ int main(int argc, char *argv[])
    bool mesh_control_side = false;
    // int  multi_comp   = 0;
 
-   // parameter for surface topography
-   // bool surface_diff = param.control.surf_proc;
-   double alpha = 0.0;
-   // double kappa = param.control.surf_diff;
-   double cond_num =0.0;
-   double ini_h_min =1.0;
-   double max_vbc_val = 1.0/10000/86400/365.25; // lower limit of maximum velocity is 0.1 mm/yr to prevent inf. massscaling.
-   double year = 0.0; 
-   double global_min_vol = 1e5;
-
-   // Let some options be overwritten by command-line options.
-   args.AddOption(&param.sim.dim, "-dim", "--dimension", "Dimension of the problem.");
-   args.AddOption(&param.sim.t_final, "-tf", "--t-final",
-                  "Final time; start time is 0.");
-   args.AddOption(&param.sim.max_tsteps, "-ms", "--max-steps",
-                  "Maximum number of steps (negative means no restriction).");
-   args.AddOption(&param.sim.visualization, "-vis", "--visualization", "-no-vis",
-                  "--no-visualization",
-                  "Enable or disable GLVis visualization.");
-   args.AddOption(&param.sim.vis_steps, "-vs", "--visualization-steps",
-                  "Visualize every n-th timestep.");
-   args.AddOption(&param.sim.visit, "-visit", "--visit", "-no-visit", "--no-visit",
-                  "Enable or disable VisIt visualization.");
-   args.AddOption(&param.sim.paraview, "-paraview", "--paraview-datafiles", "-no-paraview",
-                  "--no-paraview-datafiles",
-                  "Save data files for ParaView (paraview.org) visualization.");
-   args.AddOption(&param.sim.gfprint, "-print", "--print", "-no-print", "--no-print",
-                  "Enable or disable result output (files in mfem format).");
-   // args.AddOption(param.sim.basename.c_str(), "-k", "--outputfilename",
-   //                "Name of the visit dump files");
-   // args.AddOption(param.sim.device.c_str(), "-d", "--device",
-   //                "Device configuration string, see Device::Configure().");
-   args.AddOption(&param.sim.dev, "-dev", "--dev", "GPU device to use.");
-   args.AddOption(&param.sim.check, "-chk", "--checks", "-no-chk", "--no-checks",
-                  "Enable 2D checks.");
-   args.AddOption(&param.sim.mem_usage, "-mb", "--mem", "-no-mem", "--no-mem",
-                  "Enable memory usage.");
-   args.AddOption(&param.sim.fom, "-f", "--fom", "-no-fom", "--no-fom",
-                  "Enable figure of merit output.");
-   args.AddOption(&param.sim.gpu_aware_mpi, "-gam", "--gpu-aware-mpi", "-no-gam",
-                  "--no-gpu-aware-mpi", "Enable GPU aware MPI communications.");                      
-   // args.AddOption(&param.mesh.mesh_file, "-m", "--mesh", "Mesh file to use.");
-   args.AddOption(&param.mesh.rs_levels, "-rs", "--refine-serial",
-                  "Number of times to refine the mesh uniformly in serial.");
-   args.AddOption(&param.mesh.rp_levels, "-rp", "--refine-parallel",
-                  "Number of times to refine the mesh uniformly in parallel.");
-   args.AddOption(&param.mesh.partition_type, "-pt", "--partition",
-                  "Customized x/y/z Cartesian MPI partitioning of the serial mesh.\n\t"
-                  "Here x,y,z are relative task ratios in each direction.\n\t"
-                  "Example: with 48 mpi tasks and -pt 321, one would get a Cartesian\n\t"
-                  "partition of the serial mesh by (6,4,2) MPI tasks in (x,y,z).\n\t"
-                  "NOTE: the serially refined mesh must have the appropriate number\n\t"
-                  "of zones in each direction, e.g., the number of zones in direction x\n\t"
-                  "must be divisible by the number of MPI tasks in direction x.\n\t"
-                  "Available options: 11, 21, 111, 211, 221, 311, 321, 322, 432.");                  
-   args.AddOption(&param.mesh.order_v, "-ok", "--order-kinematic",
-                  "Order (degree) of the kinematic finite element space.");
-   args.AddOption(&param.mesh.order_e, "-ot", "--order-thermo",
-                  "Order (degree) of the thermodynamic finite element space.");
-   args.AddOption(&param.mesh.order_q, "-oq", "--order-intrule",
-                  "Order  of the integration rule.");
-   args.AddOption(&param.solver.ode_solver_type, "-s", "--ode-solver",
-                  "ODE solver: 1 - Forward Euler,\n\t"
-                  "            2 - RK2 SSP, 3 - RK3 SSP, 4 - RK4, 6 - RK6,\n\t"
-                  "            7 - RK2Avg.");
-   args.AddOption(&param.solver.cfl, "-cfl", "--cfl", "CFL-condition number.");
-   args.AddOption(&param.solver.cg_tol, "-cgt", "--cg-tol",
-                  "Relative CG tolerance (velocity linear solve).");
-   args.AddOption(&param.solver.ftz_tol, "-ftz", "--ftz-tol",
-                  "Absolute flush-to-zero tolerance.");
-   args.AddOption(&param.solver.cg_max_iter, "-cgm", "--cg-max-steps",
-                  "Maximum number of CG iterations (velocity linear solve).");
-   args.AddOption(&param.solver.p_assembly, "-pa", "--partial-assembly", "-fa",
-                  "--full-assembly",
-                  "Activate 1D tensor-based assembly (partial assembly).");
-   args.AddOption(&param.solver.impose_visc, "-iv", "--impose-viscosity", "-niv",
-                  "--no-impose-viscosity",
-                  "Use active viscosity terms even for smooth problems.");
-
-   // TMOP
-   args.AddOption(&param.tmop.tmop, "-TMOP", "--enable-TMOP", "-no-TMOP", "--disable-TMOP",
-                  "Target Mesh Optimization Paradigm.");
-   args.AddOption(&param.tmop.amr, "-amr", "--enable-amr", "-no-amr", "--disable-amr",
-                  "Adaptive mesh refinement.");
-   args.AddOption(&param.tmop.remesh_steps, "-rstep", "--remesh_steps",
-                  "remeshing frequency.");
-   args.AddOption(&param.tmop.jitter, "-ji", "--jitter",
-                  "Random perturbation scaling factor.");
-   args.AddOption(&param.tmop.metric_id, "-mid", "--metric-id",
-                  "Mesh optimization metric:\n\t"
-                  "T-metrics\n\t"
-                  "1  : |T|^2                          -- 2D no type\n\t"
-                  "2  : 0.5|T|^2/tau-1                 -- 2D shape (condition number)\n\t"
-                  "7  : |T-T^-t|^2                     -- 2D shape+size\n\t"
-                  "9  : tau*|T-T^-t|^2                 -- 2D shape+size\n\t" // not applicable
-                  "14 : |T-I|^2                        -- 2D shape+size+orientation\n\t" // not applicable 
-                  "22 : 0.5(|T|^2-2*tau)/(tau-tau_0)   -- 2D untangling\n\t" // not applicable
-                  "50 : 0.5|T^tT|^2/tau^2-1            -- 2D shape\n\t"
-                  "55 : (tau-1)^2                      -- 2D size\n\t"
-                  "56 : 0.5(sqrt(tau)-1/sqrt(tau))^2   -- 2D size\n\t"
-                  "58 : |T^tT|^2/(tau^2)-2*|T|^2/tau+2 -- 2D shape\n\t"
-                  "77 : 0.5(tau-1/tau)^2               -- 2D size\n\t"
-                  "80 : (1-gamma)mu_2 + gamma mu_77    -- 2D shape+size\n\t"
-                  "85 : |T-|T|/sqrt(2)I|^2             -- 2D shape+orientation\n\t"
-                  "90 : balanced combo mu_50 & mu_77   -- 2D shape+size\n\t"
-                  "94 : balanced combo mu_2 & mu_56    -- 2D shape+size\n\t"
-                  "98 : (1/tau)|T-I|^2                 -- 2D shape+size+orientation\n\t"
-                  // "211: (tau-1)^2-tau+sqrt(tau^2+eps)  -- 2D untangling\n\t"
-                  // "252: 0.5(tau-1)^2/(tau-tau_0)       -- 2D untangling\n\t"
-                  "301: (|T||T^-1|)/3-1              -- 3D shape\n\t"
-                  "302: (|T|^2|T^-1|^2)/9-1          -- 3D shape\n\t"
-                  "303: (|T|^2)/3/tau^(2/3)-1        -- 3D shape\n\t"
-                  "304: (|T|^3)/3^{3/2}/tau-1        -- 3D shape\n\t"
-                  // "311: (tau-1)^2-tau+sqrt(tau^2+eps)-- 3D untangling\n\t"
-                  "313: (|T|^2)(tau-tau0)^(-2/3)/3   -- 3D untangling\n\t"
-                  "315: (tau-1)^2                    -- 3D no type\n\t"
-                  "316: 0.5(sqrt(tau)-1/sqrt(tau))^2 -- 3D no type\n\t"
-                  "321: |T-T^-t|^2                   -- 3D shape+size\n\t"
-                  "322: |T-adjT^-t|^2                -- 3D shape+size\n\t"
-                  "323: |J|^3-3sqrt(3)ln(det(J))-3sqrt(3)  -- 3D shape+size\n\t"
-                  "328: balanced combo mu_301 & mu_316   -- 3D shape+size\n\t"
-                  "332: (1-gamma) mu_302 + gamma mu_315  -- 3D shape+size\n\t"
-                  "333: (1-gamma) mu_302 + gamma mu_316  -- 3D shape+size\n\t"
-                  "334: (1-gamma) mu_303 + gamma mu_316  -- 3D shape+size\n\t"
-                  "328: balanced combo mu_302 & mu_318   -- 3D shape+size\n\t"
-                  "347: (1-gamma) mu_304 + gamma mu_316  -- 3D shape+size\n\t"
-                  // "352: 0.5(tau-1)^2/(tau-tau_0)     -- 3D untangling\n\t"
-                  "360: (|T|^3)/3^{3/2}-tau              -- 3D shape\n\t"
-                  "A-metrics\n\t"
-                  "11 : (1/4*alpha)|A-(adjA)^T(W^TW)/omega|^2 -- 2D shape\n\t"
-                  "36 : (1/alpha)|A-W|^2                      -- 2D shape+size+orientation\n\t"
-                  "107: (1/2*alpha)|A-|A|/|W|W|^2             -- 2D shape+orientation\n\t"
-                  "126: (1-gamma)nu_11 + gamma*nu_14a         -- 2D shape+size\n\t"
-                 );
-   args.AddOption(&param.tmop.target_id, "-tid", "--target-id",
-                  "Target (ideal element) type:\n\t"
-                  "1: Ideal shape, unit size\n\t"
-                  "2: Ideal shape, equal size\n\t"
-                  "3: Ideal shape, initial size\n\t"
-                  "4: Given full analytic Jacobian (in physical space)\n\t"
-                  "5: Ideal shape, given size (in physical space)");
-   args.AddOption(&param.tmop.lim_const, "-lc", "--limit-const", "Limiting constant.");
-   args.AddOption(&param.tmop.adapt_lim_const, "-alc", "--adapt-limit-const",
-                  "Adaptive limiting coefficient constant.");
-   args.AddOption(&param.tmop.quad_type, "-qt", "--quad-type",
-                  "Quadrature rule type:\n\t"
-                  "1: Gauss-Lobatto\n\t"
-                  "2: Gauss-Legendre\n\t"
-                  "3: Closed uniform points");
-   args.AddOption(&param.tmop.quad_order, "-qo", "--quad_order",
-                  "Order of the quadrature rule.");
-   args.AddOption(&param.tmop.solver_type, "-st", "--solver-type",
-                  " Type of solver: (default) 0: Newton, 1: LBFGS");
-   args.AddOption(&param.tmop.solver_iter, "-ni", "--newton-iters",
-                  "Maximum number of Newton iterations.");
-   args.AddOption(&param.tmop.solver_rtol, "-rtol", "--newton-rel-tolerance",
-                  "Relative tolerance for the Newton solver.");
-   args.AddOption(&param.tmop.solver_art_type, "-art", "--adaptive-rel-tol",
-                  "Type of adaptive relative linear solver tolerance:\n\t"
-                  "0: None (default)\n\t"
-                  "1: Eisenstat-Walker type 1\n\t"
-                  "2: Eisenstat-Walker type 2");
-   args.AddOption(&param.tmop.lin_solver, "-ls", "--lin-solver",
-                  "Linear solver:\n\t"
-                  "0: l1-Jacobi\n\t"
-                  "1: CG\n\t"
-                  "2: MINRES\n\t"
-                  "3: MINRES + Jacobi preconditioner\n\t"
-                  "4: MINRES + l1-Jacobi preconditioner");
-   args.AddOption(&param.tmop.max_lin_iter, "-li", "--lin-iter",
-                  "Maximum number of iterations in the linear solve.");
-   args.AddOption(&param.tmop.move_bnd, "-bnd", "--move-boundary", "-fix-bnd",
-                  "--fix-boundary",
-                  "Enable motion along horizontal and vertical boundaries.");
-   args.AddOption(&param.tmop.combomet, "-cmb", "--combo-type",
-                  "Combination of metrics options:\n\t"
-                  "0: Use single metric\n\t"
-                  "1: Shape + space-dependent size given analytically\n\t"
-                  "2: Shape + adapted size given discretely; shared target");
-   args.AddOption(&param.tmop.bal_expl_combo, "-bec", "--balance-explicit-combo",
-                  "-no-bec", "--balance-explicit-combo",
-                  "Automatic balancing of explicit combo metrics.");
-   args.AddOption(&param.tmop.hradaptivity, "-hr", "--hr-adaptivity", "-no-hr",
-                  "--no-hr-adaptivity",
-                  "Enable hr-adaptivity.");
-   args.AddOption(&param.tmop.h_metric_id, "-hmid", "--h-metric",
-                  "Same options as metric_id. Used to determine refinement"
-                  " type for each element if h-adaptivity is enabled.");
-   args.AddOption(&param.tmop.normalization, "-nor", "--normalization", "-no-nor",
-                  "--no-normalization",
-                  "Make all terms in the optimization functional unitless.");
-   args.AddOption(&param.tmop.fdscheme, "-fd", "--fd_approximation",
-                  "-no-fd", "--no-fd-approx",
-                  "Enable finite difference based derivative computations.");
-   args.AddOption(&param.tmop.exactaction, "-ex", "--exact_action",
-                  "-no-ex", "--no-exact-action",
-                  "Enable exact action of TMOP_Integrator.");
-   args.AddOption(&param.tmop.verbosity_level, "-vl", "--verbosity-level",
-                  "Verbosity level for the involved iterative solvers:\n\t"
-                  "0: no output\n\t"
-                  "1: Newton iterations\n\t"
-                  "2: Newton iterations + linear solver summaries\n\t"
-                  "3: newton iterations + linear solver iterations");
-   args.AddOption(&param.tmop.adapt_eval, "-ae", "--adaptivity-evaluator",
-                  "0 - Advection based (DEFAULT), 1 - GSLIB.");
-   args.AddOption(&param.tmop.n_hr_iter, "-nhr", "--n_hr_iter",
-                  "Number of hr-adaptivity iterations.");
-   args.AddOption(&param.tmop.n_h_iter, "-nh", "--n_h_iter",
-                  "Number of h-adaptivity iterations per r-adaptivity"
-                  "iteration.");
-   args.AddOption(&param.tmop.mesh_node_ordering, "-mno", "--mesh_node_ordering",
-                  "Ordering of mesh nodes."
-                  "0 (default): byNodes, 1: byVDIM");
-   args.AddOption(&param.tmop.barrier_type, "-btype", "--barrier-type",
-                  "0 - None,"
-                  "1 - Shifted Barrier,"
-                  "2 - Pseudo Barrier.");
-   args.AddOption(&param.tmop.worst_case_type, "-wctype", "--worst-case-type",
-                  "0 - None,"
-                  "1 - Beta,"
-                  "2 - PMean.");
-
-   args.Parse();
-
    param.tmop.mesh_poly_deg = param.mesh.order_v;
    param.tmop.quad_order = 2*param.mesh.order_v - 1; // integration order = 2p  - 1
-
-   if (!args.Good())
-   {
-      if (mpi.Root()) { args.PrintUsage(cout); }
-      return 1;
-   }
-   if (mpi.Root()) { args.PrintOptions(cout); }
    
    if(param.sim.max_tsteps > -1)
    {
@@ -1113,9 +880,8 @@ int main(int argc, char *argv[])
    // for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
 
    // 9. Initialize the conduction operator for surface diffusion
-   ConductionOperator oper_sub(sub_fespace1, alpha, param.control.surf_diff, topo_t);
-   ConductionOperator oper_sub2(sub_fespace3, alpha, param.control.bott_diff, bottom_t);
-   // ConductionOperator oper_sub2(sub_fespace3, alpha, param.control.flat_rate, bottom_t);
+   ConductionOperator oper_sub(  sub_fespace1, param.bc.surf_alpha, param.bc.surf_diff, topo_t   );
+   ConductionOperator oper_sub2( sub_fespace3, param.bc.base_alpha, param.bc.base_diff, bottom_t );
 
    // xyz coordinates in L2 space
    ParFiniteElementSpace L2FESpace_xyz(pmesh, &l2_fec, dim); //
@@ -1182,6 +948,7 @@ int main(int argc, char *argv[])
    VectorFunctionCoefficient v_coeff(pmesh->Dimension(), v0);
    v_gf.ProjectCoefficient(v_coeff);
 
+   double max_vbc_val = param.control.max_vbc_val;
    for (int i = 0; i < bc_id.size(); ++i) 
    // for (int i = bc_id.size() -1; i > -1; --i) 
    {
@@ -1189,8 +956,10 @@ int main(int argc, char *argv[])
       if(bc_id[i] > 0)
       {
          
-         if(dim == 2){max_vbc_val = std::max(max_vbc_val,  sqrt(pow(v_unit*bc_vx[i], 2) + pow(v_unit*bc_vy[i], 2)));}
-         else{max_vbc_val = std::max(max_vbc_val,  sqrt(pow(v_unit*bc_vx[i], 2) + pow(v_unit*bc_vy[i], 2) + pow(v_unit*bc_vz[i], 2)));}
+         if(dim == 2)
+            max_vbc_val = std::max(max_vbc_val,  sqrt(pow(v_unit*bc_vx[i], 2) + pow(v_unit*bc_vy[i], 2)));
+         else
+            max_vbc_val = std::max(max_vbc_val,  sqrt(pow(v_unit*bc_vx[i], 2) + pow(v_unit*bc_vy[i], 2) + pow(v_unit*bc_vz[i], 2)));
 
          ess_bdr = 0;
          if(dim == 2)
@@ -1476,16 +1245,28 @@ int main(int argc, char *argv[])
    Vector s_rho(pmesh->attributes.Max());
 
    double pseudo_speed =  max_vbc_val * param.control.mscale;
+   double pseudo_speed_sqrd =  pseudo_speed * pseudo_speed;
 
-   if(rho_vec.size() == 1) {z_rho =rho_vec[0]; s_rho = (lambda_vec[0] + 2*mu_vec[0]) / (pseudo_speed * pseudo_speed);}
+   // EC: Why consider this case separately? Whatever the size is, shouldn't it be the same with attributes.Max()?
+   if(rho_vec.size() == 1) { 
+      z_rho = rho_vec[0]; 
+      s_rho = (lambda_vec[0] + 2*mu_vec[0]) / pseudo_speed_sqrd;
+   }
    else if(rho_vec.size() != pmesh->attributes.Max())
    {
-      if (myid == 0){cout << "The number of rho are not consistent with material ID in the given mesh." << endl; }        
+      if (myid == 0)
+         cout << "The number of rho are not consistent with material ID in the given mesh." << endl;        
       delete pmesh;
       MPI_Finalize();
       return 3;
    }
-   else {for (int i = 0; i < pmesh->attributes.Max(); i++) {z_rho[i] = rho_vec[i]; s_rho[i] = (lambda_vec[i] + 2*mu_vec[i]) / (pseudo_speed * pseudo_speed);}}
+   else 
+   {
+      for (int i = 0; i < pmesh->attributes.Max(); i++) {
+         z_rho[i] = rho_vec[i]; 
+         s_rho[i] = (lambda_vec[i] + 2*mu_vec[i]) / pseudo_speed_sqrd;
+      }
+   }
    
    // z_rho = 2700.0;
    // s_rho = 2700.0 * param.control.mscale;
@@ -1877,7 +1658,7 @@ int main(int argc, char *argv[])
                                           param.solver.cg_tol, param.solver.cg_max_iter, 
                                           param.solver.ftz_tol,
                                           param.mesh.order_q, lambda0_gf, mu0_gf, param.control.mscale, param.control.gravity, param.control.thickness,
-                                          param.control.winkler_foundation, param.control.winkler_rho, param.control.dyn_damping, param.control.dyn_factor, bc_id_pa, max_vbc_val);
+                                          param.bc.winkler_foundation, param.bc.winkler_rho, param.control.dyn_damping, param.control.dyn_factor, bc_id_pa, max_vbc_val);
     
 
    socketstream vis_rho, vis_v, vis_e;
@@ -1970,7 +1751,7 @@ int main(int argc, char *argv[])
    // h_min = geo.GetLengthEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
    dt = geo.GetTimeStepEstimate(S); // To provide dt before the estimate, initializing is necessary
    h_min = geo.GetLengthEstimate(S); // To provide dt before the estimate, initializing is necessar
-   ini_h_min = h_min;
+   double ini_h_min = h_min;
    dt = init_dt;
    bool last_step = false;
    int steps = 0;
@@ -2044,7 +1825,7 @@ int main(int argc, char *argv[])
       if (steps == param.sim.max_tsteps) { last_step = true; }
       S_old = S;
       t_old = t;
-      year = t/86400/365.25;
+      double year = t/86400/365.25;
       p_gf_old = p_gf; ini_p_old_gf = ini_p_gf; x_old_gf = x_gf;
       geo.ResetTimeStepEstimate();
       // S is the vector of dofs, t is the current time, and dt is the time step
@@ -2075,7 +1856,7 @@ int main(int argc, char *argv[])
       // ParSubMesh::Transfer(x0_side, x_gf);
       // ParSubMesh::Transfer(x1_side, x_gf);
 
-      if(param.control.surf_proc)
+      if(param.bc.surf_proc)
       {
          ParSubMesh::Transfer(x_gf, x_top); // update current mesh to submesh
          for (int i = 0; i < topo.Size(); i++){topo[i] = x_top[i+topo.Size()];}
@@ -2089,7 +1870,7 @@ int main(int argc, char *argv[])
          ParSubMesh::Transfer(x_top, x_gf); // update adjusted nodes on top boundary 
       }
 
-      if(param.control.winkler_foundation & param.control.bott_proc)
+      if(param.bc.winkler_foundation & param.bc.base_proc)
       {
          ParSubMesh::Transfer(x_gf, x_bottom); // update current mesh to submesh
          for (int i = 0; i < bottom.Size(); i++){bottom[i] = x_bottom[i+bottom.Size()];}
@@ -2098,7 +1879,7 @@ int main(int argc, char *argv[])
          bottom_t_old=bottom; 
          ode_solver_sub2->Step(bottom_t, t, dt); t=t-dt;
          bottom.SetFromTrueDofs(bottom_t);
-         if(param.control.winkler_flat)
+         if(param.bc.winkler_flat)
          {
             for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = 0.0;}
          }
@@ -2154,7 +1935,9 @@ int main(int argc, char *argv[])
 
       double dt_est = geo.GetTimeStepEstimate(S);
       h_min = geo.GetLengthEstimate(S);
+      double cond_num = 0.0;
       // cond_num = ini_h_min/h_min;
+      double global_min_vol = 1.0e5;
 
       if (param.tmop.tmop)
       {
@@ -2351,7 +2134,7 @@ int main(int argc, char *argv[])
 
 
                ParSubMesh::Transfer(x_mod_gf, x_bottom); // update current mesh to submesh
-               if(param.control.winkler_foundation)
+               if(param.bc.winkler_foundation)
                {
                   for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = global_min_bot;}
                   ParSubMesh::Transfer(x_bottom, x_mod_gf);
@@ -2367,7 +2150,7 @@ int main(int argc, char *argv[])
 
 
                ParSubMesh::Transfer(x_gf, x_bottom); // update current mesh to submesh
-               if(param.control.winkler_foundation)
+               if(param.bc.winkler_foundation)
                {
                   for (int i = 0; i < bottom.Size(); i++){x_bottom[i+bottom.Size()] = global_min_bot;}
                   ParSubMesh::Transfer(x_bottom, x_gf);
