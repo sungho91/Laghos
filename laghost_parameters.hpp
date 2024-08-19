@@ -3,15 +3,7 @@
 
 #include <map>
 #include <string>
-#include <utility>
-#include <vector>
-
-#include "constants.hpp"
-#include "array2d.hpp"
-
-typedef std::vector<double> double_vec;
-typedef std::vector<int> int_vec;
-
+#include "laghost_constants.hpp"
 
 //
 // Structures for input parameters
@@ -80,6 +72,7 @@ struct BC {
     std::string bc_vxs;
     std::string bc_vys;
     std::string bc_vzs;
+    double vel_unit;
 
     bool   winkler_foundation;
     bool   winkler_flat;

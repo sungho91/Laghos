@@ -130,6 +130,288 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
                // ParLinearForm &flattening,
                int dim, bool amr);
 
+static void Generate_and_refine_initial_mesh(Mesh *&mesh, Param &param, const MPI_Session &mpi)
+{
+   if (param.mesh.mesh_file.compare("default") != 0)
+      mesh = new Mesh(param.mesh.mesh_file.c_str(), true, true);
+   else {
+      switch (param.sim.dim) {
+         case 1:
+               mesh = new Mesh(Mesh::MakeCartesian1D(2));
+               if( mesh ) {
+                  mesh->GetBdrElement(0)->SetAttribute(1);
+                  mesh->GetBdrElement(1)->SetAttribute(1);
+               }
+               else
+                  MFEM_ABORT("Failed to create 1D mesh.");
+               break;
+         case 2:
+               mesh = new Mesh(Mesh::MakeCartesian2D(2, 2, Element::QUADRILATERAL, true));
+               if( mesh ) {
+                  const int NBE = mesh->GetNBE();
+                  for (int b = 0; b < NBE; b++) {
+                     Element *bel = mesh->GetBdrElement(b);
+                     const int attr = (b < NBE / 2) ? 2 : 1;
+                     std::cout << NBE << "," << b << "," << attr << std::endl;
+                     bel->SetAttribute(attr);
+                  }
+               }
+               else
+                  MFEM_ABORT("Failed to create 2D mesh.");
+               break;
+         case 3:
+               mesh = new Mesh(Mesh::MakeCartesian3D(2, 2, 2, Element::HEXAHEDRON, true));
+               if( mesh ) {
+                  const int NBE = mesh->GetNBE();
+                  for (int b = 0; b < NBE; b++) {
+                     Element *bel = mesh->GetBdrElement(b);
+                     const int attr = (b < NBE / 3) ? 3 : (b < 2 * NBE / 3) ? 1 : 2;
+                     bel->SetAttribute(attr);
+                  }
+               }
+               else
+                  MFEM_ABORT("Failed to create 3D mesh.");
+               break;
+         default:
+               break;
+      }
+   }
+   dim = mesh->Dimension();
+   MFEM_VERIFY( param.sim.dim == dim, "Dimension mismatch.");
+
+   // 1D vs partial assembly sanity check.
+   if (param.solver.p_assembly && dim == 1) {
+      param.solver.p_assembly = false;
+      if (mpi.Root())
+         cout << "Laghos does not support PA in 1D. Switching to FA." << endl;
+   }
+
+   // Refine the mesh in serial to increase the resolution.
+   for (int lev = 0; lev < param.mesh.rs_levels; lev++) {
+      mesh->UniformRefinement();
+   }
+   if (mpi.Root())
+      cout << "Number of zones in the serial mesh: " << mesh->GetNE() << endl;
+
+   // and then refine locally. Non-conforming elements might be generated at this stage.
+   if (param.mesh.local_refinement) {
+      mesh->EnsureNCMesh(true);
+      Array<int> refs;
+      for (int i = 0; i < mesh->GetNE(); i++) {
+         if (mesh->GetAttribute(i) >= 2)
+               refs.Append(i);
+      }
+      mesh->GeneralRefinement(refs, 1);
+      refs.DeleteAll();
+
+      for (int i = 0; i < mesh->GetNE(); i++) {
+         if (mesh->GetAttribute(i) >= 3)
+               refs.Append(i);
+      }
+      mesh->GeneralRefinement(refs, 1);
+      refs.DeleteAll();
+
+      mesh->Finalize(true);
+   }
+}
+
+static void Partition_initial_mesh(ParMesh *&pmesh, Mesh *&mesh, Param &param, const MPI_Session &mpi)
+{
+   const int num_tasks = mpi.WorldSize();
+   int unit = 1;
+   const int dim = mesh->Dimension();
+   int *nxyz = new int[dim];
+   switch (param.mesh.partition_type)
+   {
+      case 0:
+         for (int d = 0; d < dim; d++)
+         {
+            nxyz[d] = unit;
+         }
+         break;
+      case 11:
+      case 111:
+         unit = static_cast<int>(floor(pow(num_tasks, 1.0 / dim) + 1e-2));
+         for (int d = 0; d < dim; d++)
+         {
+            nxyz[d] = unit;
+         }
+         break;
+      case 21: // 2D
+         unit = static_cast<int>(floor(pow(num_tasks / 2, 1.0 / 2) + 1e-2));
+         nxyz[0] = 2 * unit;
+         nxyz[1] = unit;
+         break;
+      case 31: // 2D
+         unit = static_cast<int>(floor(pow(num_tasks / 3, 1.0 / 2) + 1e-2));
+         nxyz[0] = 3 * unit;
+         nxyz[1] = unit;
+         break;
+      case 32: // 2D
+         unit = static_cast<int>(floor(pow(2 * num_tasks / 3, 1.0 / 2) + 1e-2));
+         nxyz[0] = 3 * unit / 2;
+         nxyz[1] = unit;
+         break;
+      case 49: // 2D
+         unit = static_cast<int>(floor(pow(9 * num_tasks / 4, 1.0 / 2) + 1e-2));
+         nxyz[0] = 4 * unit / 9;
+         nxyz[1] = unit;
+         break;
+      case 51: // 2D
+         unit = static_cast<int>(floor(pow(num_tasks / 5, 1.0 / 2) + 1e-2));
+         nxyz[0] = 5 * unit;
+         nxyz[1] = unit;
+         break;
+      case 211: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 2, 1.0 / 3) + 1e-2));
+         nxyz[0] = 2 * unit;
+         nxyz[1] = unit;
+         nxyz[2] = unit;
+         break;
+      case 221: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 4, 1.0 / 3) + 1e-2));
+         nxyz[0] = 2 * unit;
+         nxyz[1] = 2 * unit;
+         nxyz[2] = unit;
+         break;
+      case 311: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 3, 1.0 / 3) + 1e-2));
+         nxyz[0] = 3 * unit;
+         nxyz[1] = unit;
+         nxyz[2] = unit;
+         break;
+      case 321: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 6, 1.0 / 3) + 1e-2));
+         nxyz[0] = 3 * unit;
+         nxyz[1] = 2 * unit;
+         nxyz[2] = unit;
+         break;
+      case 322: // 3D.
+         unit = static_cast<int>(floor(pow(2 * num_tasks / 3, 1.0 / 3) + 1e-2));
+         nxyz[0] = 3 * unit / 2;
+         nxyz[1] = unit;
+         nxyz[2] = unit;
+         break;
+      case 432: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 3, 1.0 / 3) + 1e-2));
+         nxyz[0] = 2 * unit;
+         nxyz[1] = 3 * unit / 2;
+         nxyz[2] = unit;
+         break;
+      case 511: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 5, 1.0 / 3) + 1e-2));
+         nxyz[0] = 5 * unit;
+         nxyz[1] = unit;
+         nxyz[2] = unit;
+         break;
+      case 521: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 10, 1.0 / 3) + 1e-2));
+         nxyz[0] = 5 * unit;
+         nxyz[1] = 2 * unit;
+         nxyz[2] = unit;
+         break;
+      case 522: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 20, 1.0 / 3) + 1e-2));
+         nxyz[0] = 5 * unit;
+         nxyz[1] = 2 * unit;
+         nxyz[2] = 2 * unit;
+         break;
+      case 911: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 9, 1.0 / 3) + 1e-2));
+         nxyz[0] = 9 * unit;
+         nxyz[1] = unit;
+         nxyz[2] = unit;
+         break;
+      case 921: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 18, 1.0 / 3) + 1e-2));
+         nxyz[0] = 9 * unit;
+         nxyz[1] = 2 * unit;
+         nxyz[2] = unit;
+         break;
+      case 922: // 3D.
+         unit = static_cast<int>(floor(pow(num_tasks / 36, 1.0 / 3) + 1e-2));
+         nxyz[0] = 9 * unit;
+         nxyz[1] = 2 * unit;
+         nxyz[2] = 2 * unit;
+         break;
+      default:
+         if ( mpi.Root() )
+            cout << "Unknown partition type: " << param.mesh.partition_type << '\n';
+         delete mesh;
+         MPI_Finalize();
+         MFEM_ABORT("Unknown partition type.");
+         break;
+   }
+
+   Array<int> cxyz; // Leave undefined. It won't be used.
+   int product = 1;
+   for (int d = 0; d < dim; d++)
+   {
+      product *= nxyz[d];
+   }
+   const bool cartesian_partitioning = (cxyz.Size() > 0) ? true : false;
+   if (product == num_tasks || cartesian_partitioning)
+   {
+      if (cartesian_partitioning)
+      {
+         int cproduct = 1;
+         for (int d = 0; d < dim; d++)
+         {
+            cproduct *= cxyz[d];
+         }
+         MFEM_VERIFY(!cartesian_partitioning || cxyz.Size() == dim,
+                  "Expected " << mesh->SpaceDimension() << " integers with the "
+                  "option --cartesian-partitioning.");
+         MFEM_VERIFY(!cartesian_partitioning || num_tasks == cproduct,
+                  "Expected cartesian partitioning product to match number of ranks.");
+      }
+      int *partitioning = cartesian_partitioning ?
+                     mesh->CartesianPartitioning(cxyz) :
+                     mesh->CartesianPartitioning(nxyz);
+      pmesh = new ParMesh(MPI_COMM_WORLD, *mesh, partitioning);
+      delete[] partitioning;
+   }
+   else
+   {
+      if ( mpi.Root() )
+      {
+         cout << "Non-Cartesian partitioning through METIS will be used.\n";
+#ifndef MFEM_USE_METIS
+         MFEM_ABORT("MFEM was built without METIS.\nAdjust the number of tasks to use a Cartesian split.");
+#endif
+      }
+      pmesh = new ParMesh(MPI_COMM_WORLD, *mesh);
+   }
+   delete[] nxyz;
+   delete mesh;
+
+   // Refine the mesh further in parallel to increase the resolution.
+   for(int lev = 0; lev < param.mesh.rp_levels; lev++)
+      pmesh->UniformRefinement();
+   // pmesh->Rebalance();
+
+   int NE = pmesh->GetNE(), ne_min, ne_max;
+   MPI_Reduce(&NE, &ne_min, 1, MPI_INT, MPI_MIN, 0, pmesh->GetComm());
+   MPI_Reduce(&NE, &ne_max, 1, MPI_INT, MPI_MAX, 0, pmesh->GetComm());
+   if( mpi.Root() )
+      cout << "Zones min/max: " << ne_min << " " << ne_max << endl;
+
+}
+
+static void Collect_boundingbox_info( ParMesh *pmesh, Param &param, Vector &bb_center, Vector &bb_length)
+{
+   const int dim = pmesh->Dimension();
+   MFEM_VERIFY( bb_center.Size() == dim && bb_length.Size() == dim, "The size of bb_center and bb_length should be equal to dim.");
+   // Mesh bounding box
+   Vector bb_min(dim), bb_max(dim);
+   pmesh->GetBoundingBox(bb_min, bb_max, max(param.mesh.order_v, 1));
+   for( int i = 0; i < dim; i++)
+   {
+      bb_center[i] = (bb_min[i] + bb_max[i]) * 0.5;
+      bb_length[i] = (bb_max[i] - bb_min[i]);
+   }
+}
+
 int main(int argc, char *argv[])
 {
    // Initialize MPI.
@@ -144,382 +426,44 @@ int main(int argc, char *argv[])
    Param param;
    read_and_assign_input_parameters( args, param, myid );
 
-   Array<int> cxyz; // Leave undefined. It won't be used.
-   double init_dt = 1.0;
-   double blast_energy = 0.0;
-   // double v_unit = 1.0/86400/365.25;
-   double v_unit = 1.0;
-   // double blast_energy = 1.0e-6;
-   double blast_position[] = {0.0, 0.0, 0.0};
-   // double blast_energy2 = 0.1;
-   // double blast_position2[] = {8.0, 0.5};
-   // Mesh bounding box
-   Vector bb_min, bb_max;
-   double bb_center[] = {0.0, 0.0, 0.0};
-   double bb_length[] = {0.0, 0.0, 0.0};
-
-   Vector bb_min2, bb_max2;
-   double bb_center2[] = {0.0, 0.0, 0.0};
-   double bb_length2[] = {0.0, 0.0, 0.0};
-   double stretching_factor[] = {0.0, 0.0, 0.0};
    int num_materials = 1;
 
    // Remeshing performs using the Target-Matrix Optimization Paradigm (TMOP)
    bool mesh_changed = false;
    bool mesh_control_side = false;
-   // int  multi_comp   = 0;
-
-   param.tmop.mesh_poly_deg = param.mesh.order_v;
-   param.tmop.quad_order = 2*param.mesh.order_v - 1; // integration order = 2p  - 1
    
-   if(param.sim.max_tsteps > -1)
-   {
-      param.sim.t_final = 1.0e38;
-   }   
-   if(param.sim.year)
-   {
-      param.sim.t_final = param.sim.t_final * 86400 * 365.25;
-      v_unit = 1.0/86400/365.25;
-      
-      if (mpi.Root())
-      {
-         std::cout << "Use years in output instead of seconds is true" << std::endl;
-      }
-   }
-   else
-   {
-      // init_dt = 1e-1;
-      if (mpi.Root())
-      {
-         std::cout << "Use seconds in output instead of years is true" << std::endl;
-      }
-      
-   }
-
    // Configure the device from the command line options
    Device backend;
    backend.Configure(param.sim.device, param.sim.dev);
    if (mpi.Root()) { backend.Print(); }
    backend.SetGPUAwareMPI(param.sim.gpu_aware_mpi);
 
+   // Create, refine and partition the starting mesh.
+   Mesh *mesh = nullptr;
+   ParMesh *pmesh = nullptr;
    // On all processors, use the default builtin 1D/2D/3D mesh or read the
    // serial one given on the command line.
-   Mesh *mesh;
-
-   if (param.mesh.mesh_file.compare("default") != 0)
-   {
-      mesh = new Mesh(param.mesh.mesh_file.c_str(), true, true);
-   }
-   else
-   {
-      if (param.sim.dim == 1)
-      {
-         mesh = new Mesh(Mesh::MakeCartesian1D(2));
-         mesh->GetBdrElement(0)->SetAttribute(1);
-         mesh->GetBdrElement(1)->SetAttribute(1);
-      }
-      if (param.sim.dim == 2)
-      {
-         mesh = new Mesh(Mesh::MakeCartesian2D(2, 2, Element::QUADRILATERAL,
-                                               true));
-         const int NBE = mesh->GetNBE();
-         for (int b = 0; b < NBE; b++)
-         {
-            Element *bel = mesh->GetBdrElement(b);
-            const int attr = (b < NBE/2) ? 2 : 1;
-            std::cout<< NBE <<"," << b << "," << attr <<std::endl;
-            bel->SetAttribute(attr);
-         }
-      }
-      if (param.sim.dim == 3)
-      {
-         mesh = new Mesh(Mesh::MakeCartesian3D(2, 2, 2, Element::HEXAHEDRON,
-                                               true));
-         const int NBE = mesh->GetNBE();
-         for (int b = 0; b < NBE; b++)
-         {
-            Element *bel = mesh->GetBdrElement(b);
-            const int attr = (b < NBE/3) ? 3 : (b < 2*NBE/3) ? 1 : 2;
-            bel->SetAttribute(attr);
-         }
-      }
-   }
-   dim = mesh->Dimension();
-
-   // 1D vs partial assembly sanity check.
-   if (param.solver.p_assembly && dim == 1)
-   {
-      param.solver.p_assembly = false;
-      if (mpi.Root())
-      {
-         cout << "Laghos does not support PA in 1D. Switching to FA." << endl;
-      }
-   }
-
-   // Refine the mesh in serial to increase the resolution.
-   for (int lev = 0; lev < param.mesh.rs_levels; lev++) { mesh->UniformRefinement(); }
-   // mesh->EnsureNCMesh(true);
-
-   if(param.mesh.local_refinement)
-   {
-      // Local refiement
-      mesh->EnsureNCMesh(true);
-
-      Array<int> refs;
-      // for (int i = 0; i < mesh->GetNE(); i++)
-      // {
-      //    if(mesh->GetAttribute(i) >= 2)
-      //    {
-      //       refs.Append(i);
-      //    }
-      // }
-
-      // mesh->GeneralRefinement(refs, 1);
-      // refs.DeleteAll();
-
-      for (int i = 0; i < mesh->GetNE(); i++)
-      {
-         if(mesh->GetAttribute(i) >= 2)
-         {
-            refs.Append(i);
-         }
-      }
-
-      mesh->GeneralRefinement(refs, 1);
-      refs.DeleteAll();
-
-      for (int i = 0; i < mesh->GetNE(); i++)
-      {
-         if(mesh->GetAttribute(i) >= 3)
-         {
-            refs.Append(i);
-         }
-      }
-
-      mesh->GeneralRefinement(refs, 1);
-      refs.DeleteAll();
-
-      // for (int i = 0; i < mesh->GetNE(); i++)
-      // {
-      //    if(mesh->GetAttribute(i) == 3)
-      //    {
-      //       refs.Append(i);
-      //    }
-      // }
-
-      // mesh->GeneralRefinement(refs, 1);
-      // refs.DeleteAll();
-      
-      mesh->Finalize(true);
-   }
-
-   const int mesh_NE = mesh->GetNE();
-   if (mpi.Root())
-   {
-      cout << "Number of zones in the serial mesh: " << mesh_NE << endl;
-   }
-
-   // mesh->GetBoundingBox(bb_min, bb_max, max(param.mesh.order_v, 1));
-
+   Generate_and_refine_initial_mesh(mesh, param, mpi);
    // Parallel partitioning of the mesh.
-   ParMesh *pmesh = nullptr;
-   const int num_tasks = mpi.WorldSize(); int unit = 1;
-   int *nxyz = new int[dim];
-   switch (param.mesh.partition_type)
-   {
-      case 0:
-         for (int d = 0; d < dim; d++) { nxyz[d] = unit; }
-         break;
-      case 11:
-      case 111:
-         unit = static_cast<int>(floor(pow(num_tasks, 1.0 / dim) + 1e-2));
-         for (int d = 0; d < dim; d++) { nxyz[d] = unit; }
-         break;
-      case 21: // 2D
-         unit = static_cast<int>(floor(pow(num_tasks / 2, 1.0 / 2) + 1e-2));
-         nxyz[0] = 2 * unit; nxyz[1] = unit;
-         break;
-      case 31: // 2D
-         unit = static_cast<int>(floor(pow(num_tasks / 3, 1.0 / 2) + 1e-2));
-         nxyz[0] = 3 * unit; nxyz[1] = unit;
-         break;
-      case 32: // 2D
-         unit = static_cast<int>(floor(pow(2 * num_tasks / 3, 1.0 / 2) + 1e-2));
-         nxyz[0] = 3 * unit / 2; nxyz[1] = unit;
-         break;
-      case 49: // 2D
-         unit = static_cast<int>(floor(pow(9 * num_tasks / 4, 1.0 / 2) + 1e-2));
-         nxyz[0] = 4 * unit / 9; nxyz[1] = unit;
-         break;
-      case 51: // 2D
-         unit = static_cast<int>(floor(pow(num_tasks / 5, 1.0 / 2) + 1e-2));
-         nxyz[0] = 5 * unit; nxyz[1] = unit;
-         break;
-      case 211: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 2, 1.0 / 3) + 1e-2));
-         nxyz[0] = 2 * unit; nxyz[1] = unit; nxyz[2] = unit;
-         break;
-      case 221: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 4, 1.0 / 3) + 1e-2));
-         nxyz[0] = 2 * unit; nxyz[1] = 2 * unit; nxyz[2] = unit;
-         break;
-      case 311: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 3, 1.0 / 3) + 1e-2));
-         nxyz[0] = 3 * unit; nxyz[1] = unit; nxyz[2] = unit;
-         break;
-      case 321: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 6, 1.0 / 3) + 1e-2));
-         nxyz[0] = 3 * unit; nxyz[1] = 2 * unit; nxyz[2] = unit;
-         break;
-      case 322: // 3D.
-         unit = static_cast<int>(floor(pow(2 * num_tasks / 3, 1.0 / 3) + 1e-2));
-         nxyz[0] = 3 * unit / 2; nxyz[1] = unit; nxyz[2] = unit;
-         break;
-      case 432: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 3, 1.0 / 3) + 1e-2));
-         nxyz[0] = 2 * unit; nxyz[1] = 3 * unit / 2; nxyz[2] = unit;
-         break;
-      case 511: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 5, 1.0 / 3) + 1e-2));
-         nxyz[0] = 5 * unit; nxyz[1] = unit; nxyz[2] = unit;
-         break;
-      case 521: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 10, 1.0 / 3) + 1e-2));
-         nxyz[0] = 5 * unit; nxyz[1] = 2 * unit; nxyz[2] = unit;
-         break;
-      case 522: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 20, 1.0 / 3) + 1e-2));
-         nxyz[0] = 5 * unit; nxyz[1] = 2 * unit; nxyz[2] = 2 * unit;
-         break;
-      case 911: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 9, 1.0 / 3) + 1e-2));
-         nxyz[0] = 9 * unit; nxyz[1] = unit; nxyz[2] = unit;
-         break;
-      case 921: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 18, 1.0 / 3) + 1e-2));
-         nxyz[0] = 9 * unit; nxyz[1] = 2 * unit; nxyz[2] = unit;
-         break;
-      case 922: // 3D.
-         unit = static_cast<int>(floor(pow(num_tasks / 36, 1.0 / 3) + 1e-2));
-         nxyz[0] = 9 * unit; nxyz[1] = 2 * unit; nxyz[2] = 2 * unit;
-         break;
-      default:
-         if (myid == 0)
-         {
-            cout << "Unknown partition type: " << param.mesh.partition_type << '\n';
-         }
-         delete mesh;
-         MPI_Finalize();
-         return 3;
-   }
-   int product = 1;
-   for (int d = 0; d < dim; d++) { product *= nxyz[d]; }
-   const bool cartesian_partitioning = (cxyz.Size()>0)?true:false;
-   if (product == num_tasks || cartesian_partitioning)
-   {
-      if (cartesian_partitioning)
-      {
-         int cproduct = 1;
-         for (int d = 0; d < dim; d++) { cproduct *= cxyz[d]; }
-         MFEM_VERIFY(!cartesian_partitioning || cxyz.Size() == dim,
-                     "Expected " << mesh->SpaceDimension() << " integers with the "
-                     "option --cartesian-partitioning.");
-         MFEM_VERIFY(!cartesian_partitioning || num_tasks == cproduct,
-                     "Expected cartesian partitioning product to match number of ranks.");
-      }
-      int *partitioning = cartesian_partitioning ?
-                          mesh->CartesianPartitioning(cxyz):
-                          mesh->CartesianPartitioning(nxyz);
-      pmesh = new ParMesh(MPI_COMM_WORLD, *mesh, partitioning);
-      delete [] partitioning;
-   }
-   else
-   {
-      if (myid == 0)
-      {
-         cout << "Non-Cartesian partitioning through METIS will be used.\n";
-#ifndef MFEM_USE_METIS
-         cout << "MFEM was built without METIS. "
-              << "Adjust the number of tasks to use a Cartesian split." << endl;
-#endif
-      }
-#ifndef MFEM_USE_METIS
-      return 1;
-#endif
-      pmesh = new ParMesh(MPI_COMM_WORLD, *mesh);
-   }
-   delete [] nxyz;
-   delete mesh;
+   Partition_initial_mesh(pmesh, mesh, param, mpi);
 
-   // Refine the mesh further in parallel to increase the resolution.
-   for (int lev = 0; lev < param.mesh.rp_levels; lev++) { pmesh->UniformRefinement(); }
-
-   // pmesh->Rebalance();
-
-   int NE = pmesh->GetNE(), ne_min, ne_max;
-   MPI_Reduce(&NE, &ne_min, 1, MPI_INT, MPI_MIN, 0, pmesh->GetComm());
-   MPI_Reduce(&NE, &ne_max, 1, MPI_INT, MPI_MAX, 0, pmesh->GetComm());
-   if (myid == 0)
-   { cout << "Zones min/max: " << ne_min << " " << ne_max << endl; }
-
-   pmesh->GetBoundingBox(bb_min, bb_max, max(param.mesh.order_v, 1));
-
-   if(dim == 2)
-   {
-      bb_center[0] = (bb_min[0]+bb_max[0])*0.5;
-      bb_center[1] = (bb_min[1]+bb_max[1])*0.5;
-
-      bb_length[0] = (bb_max[0]-bb_min[0]);
-      bb_length[1] = (bb_max[1]-bb_min[1]);
-
-      // if (myid == 0)
-      // { 
-      //    cout << "min " << bb_min[0] << " " << bb_min[1] << endl; 
-      //    cout << "max " << bb_max[0] << " " << bb_max[1] << endl;
-      //    cout << "center " << bb_center[0] << " " << bb_center[1] << endl;
-      //    cout << "length " << bb_length[0] << " " << bb_length[1] << endl;
-      // }
-   }
-   else
-   {
-      bb_center[0] = (bb_min[0]+bb_max[0])*0.5;
-      bb_center[1] = (bb_min[1]+bb_max[1])*0.5;
-      bb_center[2] = (bb_min[2]+bb_max[2])*0.5;
-
-      bb_length[0] = (bb_max[0]-bb_min[0]);
-      bb_length[1] = (bb_max[1]-bb_min[1]);
-      bb_length[2] = (bb_max[2]-bb_min[2]);
-   }
+   // Collect the bounding box info for the initial mesh for remeshing.
+   Vector bb_center(pmesh->Dimension());
+   Vector bb_length(pmesh->Dimension());
+   Collect_boundingbox_info(pmesh, param, bb_center, bb_length);
    
    // Define the parallel finite element spaces. We use:
    // - H1 (Gauss-Lobatto, continuous) for position and velocity.
-   // - L2 (Bernstein, discontinuous) for specific internal energy.
-   // L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::Positive); // Bernstein polynomials.
-   // L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::GaussLegendre); // Open type.
+   // - L2 (Bernstein, discontinuous) for specific internal energy and symmetric Cauchy stress.
+   // L2_FECollection BasisType: Positive, GaussLegendre, GaussLobatto
    L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::GaussLobatto); // Closed type.
-
-   L2_FECollection l2_fec(param.mesh.order_e, pmesh->Dimension(), BasisType::Positive); // Non-positive basis drives oscillation while interpolation wtihin DG type elements. 
-   ParFiniteElementSpace l2_fes(pmesh, &l2_fec);
-
-   // switch (param.mesh.l2_basis)
-   // {
-   //    case 1: L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::GaussLobatto); break;
-   //    case 2: L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::GaussLegendre); break;
-   //    case 3: L2_FECollection L2FEC(param.mesh.order_e, dim, BasisType::Positive); break;
-   //    default:
-   //       if (myid == 0)
-   //       {
-   //          cout << "Unknown l2 basis type: " << param.mesh.l2_basis << '\n';
-   //       }
-   //       delete pmesh;
-   //       MPI_Finalize();
-   //       return 3;
-   // }
-
+   ParFiniteElementSpace L2FESpace(pmesh, &L2FEC); // FES for energy.
+   ParFiniteElementSpace L2FESpace_stress(pmesh, &L2FEC, 3*(dim-1)); // FES for stress. EC: Why not of the Coefficient type?
    H1_FECollection H1FEC(param.mesh.order_v, dim);
-   ParFiniteElementSpace L2FESpace(pmesh, &L2FEC);
    ParFiniteElementSpace H1FESpace(pmesh, &H1FEC, pmesh->Dimension());
-   ParFiniteElementSpace L2FESpace_stress(pmesh, &L2FEC, 3*(dim-1)); // three varibles for 2D, six varibles for 3D
+   // Non-positive basis drives oscillation while interpolation wtihin DG type elements. 
+   L2_FECollection l2_fec(param.mesh.order_e, pmesh->Dimension(), BasisType::Positive); 
+   ParFiniteElementSpace l2_fes(pmesh, &l2_fec);
 
    // Boundary conditions: all tests use v.n = 0 on the boundary, and we assume
    // that the boundaries are straight.
@@ -592,15 +536,6 @@ int main(int argc, char *argv[])
    while (getline(vzs, token, ',')) 
    {bc_vz.push_back(std::stod(token)); // Convert string to int and add to vector
    }
-
-   if(param.bc.bc_unit =="cm/yr")
-   {v_unit = v_unit/100.0;}
-   else if(param.bc.bc_unit =="mm/yr")
-   {v_unit = v_unit/1000.0;}
-   else if(param.bc.bc_unit =="m/s")
-   {v_unit = v_unit*1.0;}
-   else if(param.bc.bc_unit =="cm/s")
-   {v_unit = v_unit*0.01;}
 
    // Dirichlet type boundary condition (i.e., fixing velocity component at boundaries)
    Array<int> ess_tdofs, ess_vdofs;
@@ -949,6 +884,7 @@ int main(int argc, char *argv[])
    v_gf.ProjectCoefficient(v_coeff);
 
    double max_vbc_val = param.control.max_vbc_val;
+   double v_unit      = param.bc.vel_unit;
    for (int i = 0; i < bc_id.size(); ++i) 
    // for (int i = bc_id.size() -1; i > -1; --i) 
    {
@@ -1025,29 +961,6 @@ int main(int argc, char *argv[])
          }
       }
    }
-
-   
-
-   // for (int i = 0; i < ess_vdofs.Size(); i++)
-   // {
-   //    v_gf(ess_vdofs[i]) = 0.0;
-   // }
-
-   // For the Sedov test, we use a delta function at the origin.
-   // Vector dir(pmesh->Dimension());
-   // L2_FECollection h1_fec(order_v, pmesh->Dimension());
-   // ParFiniteElementSpace h1_fes(pmesh, &h1_fec);
-   // ParGridFunction h1_v(&h1_fes);
-   // dir=0.0;
-   // dir(1)=1.0;
-   // // VectorDeltaCoefficient v2_coeff(pmesh->Dimension());
-   // // v2_coeff.SetScale(blast_energy2);
-   // // v2_coeff.SetDeltaCenter(cent);
-   // // v2_coeff.SetDirection(dir);
-   // VectorDeltaCoefficient v2_coeff(dir, blast_position2[0], blast_position2[1], blast_energy2);
-  
-   // h1_v.ProjectCoefficient(v2_coeff);
-   // // v_gf.ProjectGridFunction(h1_v);
 
    // Sync the data location of v_gf with its base, S
    v_gf.SyncAliasMemory(S);
@@ -1268,11 +1181,6 @@ int main(int argc, char *argv[])
       }
    }
    
-   // z_rho = 2700.0;
-   // s_rho = 2700.0 * param.control.mscale;
-
-   // GridFunctionCoefficient u_coeff(&u_alpha_gf);
-   
    ParGridFunction rho0_gf(&L2FESpace);
    ParGridFunction fictitious_rho0_gf(&L2FESpace);
 
@@ -1283,25 +1191,11 @@ int main(int argc, char *argv[])
    rho0_gf.ProjectGridFunction(l2_rho0_gf);
    l2_rho0_gf.ProjectCoefficient(scale_rho0_coeff);
    fictitious_rho0_gf.ProjectGridFunction(l2_rho0_gf);
-
-   // rho_ini_gf.ProjectGridFunction(l2_rho0_gf);
-
-   /*
-   ParGridFunction rho0_gf(&L2FESpace);
-   FunctionCoefficient rho0_coeff(rho0);
-   // FunctionCoefficient super_rho0_coeff(rho0);
-   L2_FECollection l2_fec(order_e, pmesh->Dimension());
-   ParFiniteElementSpace l2_fes(pmesh, &l2_fec);
-   ParGridFunction l2_rho0_gf(&l2_fes), l2_e(&l2_fes);
-   l2_rho0_gf.ProjectCoefficient(rho0_coeff);
-   rho0_gf.ProjectGridFunction(l2_rho0_gf);
-   */
    
    if (param.sim.problem == 1)
    {
       // For the Sedov test, we use a delta function at the origin.
-      DeltaCoefficient e_coeff(blast_position[0], blast_position[1],
-                               blast_position[2], blast_energy);
+      DeltaCoefficient e_coeff(0.0, 0.0, 0.0, 0.0);
       l2_e.ProjectCoefficient(e_coeff);
    }
    else
@@ -1517,11 +1411,6 @@ int main(int argc, char *argv[])
 
    s_gf.SyncAliasMemory(S);
 
-   // for(int i = 0; i < s_gf.Size()/3; i++)
-   // {
-   //    cout << "sxx " << s_gf[i+0*s_gf.Size()/3] << ", syy " << s_gf[i+1*s_gf.Size()/3] << ", sxy " << s_gf[i+2*s_gf.Size()/3] << endl;;
-   // }
-
    ParGridFunction s_old_gf(&L2FESpace_stress);
    s_old_gf=s_gf;
 
@@ -1565,87 +1454,7 @@ int main(int argc, char *argv[])
    
    ParGridFunction u_gf(&H1FESpace);  // Displacment
    u_gf = 0.0;
-
-
-   // // The numerical sandbox case
-   // if (param.tmop.tmop)
-   // {
-   //    ParGridFunction x_mod_gf(&H1FESpace); 
-   //    // Store source mesh positions.
-   //    ParMesh *pmesh_copy =  new ParMesh(*pmesh);
-   //    x_mod_gf = x_gf;
-            
-   //    if(myid == 0){cout << "First Remeshing " << endl;}
-   //    HR_adaptivity(pmesh_copy, x_mod_gf, ess_tdofs, myid, param.tmop.mesh_poly_deg, param.mesh.rs_levels, param.mesh.rp_levels, param.tmop.jitter, param.tmop.metric_id, param.tmop.target_id,\
-   //                   param.tmop.lim_const, param.tmop.adapt_lim_const, param.tmop.quad_type, param.tmop.quad_order, param.tmop.solver_type, param.tmop.solver_iter, param.tmop.solver_rtol, \
-   //                   param.tmop.solver_art_type, param.tmop.lin_solver, param.tmop.max_lin_iter, param.tmop.move_bnd, param.tmop.combomet, param.tmop.bal_expl_combo, param.tmop.hradaptivity, \
-   //                   param.tmop.h_metric_id, param.tmop.normalization, param.tmop.verbosity_level, param.tmop.fdscheme, param.tmop.adapt_eval, param.tmop.exactaction, param.solver.p_assembly, \
-   //                   param.tmop.n_hr_iter, param.tmop.n_h_iter, param.tmop.mesh_node_ordering, param.tmop.barrier_type, param.tmop.worst_case_type);
-
-      
-   //    x_gf = *pmesh_copy->GetNodes();  x_gf *= param.tmop.ale; x_gf.Add(1.0 - param.tmop.ale, x_old_gf);
-   //    pmesh->NewNodes(x_gf, false); 
-   //    delete pmesh_copy;
-
-   //    xyz_gf_l2.ProjectCoefficient(xyz_coeff);
-
-   //    if(param.control.lithostatic)
-   //    {
-   //       LithostaticCoefficient Lithostatic_coeff(dim, xyz_gf_l2, rho0_gf, param.control.gravity, param.control.thickness);
-   //       s_gf.ProjectCoefficient(Lithostatic_coeff);
-   //    }
-
-   //    CompoCoefficient comp_coeff(dim, xyz_gf_l2, param.control.thickness);
-   //    comp_gf.ProjectCoefficient(comp_coeff);
-   //    rho0_gf = 0.0; lambda0_gf = 0.0; mu0_gf = 0.0;
-
-   //    for(int j = 0; j < rho0_gf.Size(); j++ )
-   //    {
-   //       for (int i = 0; i < pmesh->attributes.Max(); i++)
-   //       {
-   //          rho0_gf[j] = rho0_gf[j] + z_rho[i]*comp_gf[j+rho0_gf.Size()*i];
-   //          lambda0_gf[j] = lambda0_gf[j] + lambda[i]*comp_gf[j+rho0_gf.Size()*i];
-   //          mu0_gf[j] = mu0_gf[j] + mu[i]*comp_gf[j+rho0_gf.Size()*i];
-   //       }
-   //    }
-   // }
-
-   // // Flattening node
-   // ParLinearForm flattening(&H1FESpace); 
-   // Array<int> nbc_bdr(pmesh->bdr_attributes.Max());   
-   // nbc_bdr = 0; nbc_bdr[2] = 1; // bottome boundary
-   // VectorArrayCoefficient bottom_node(dim);
-   // for (int i = 0; i < dim-1; i++)
-   // {
-   //   bottom_node.Set(i, new ConstantCoefficient(0.0));
-   // }
-
-   // Vector bottom_node_id(pmesh->bdr_attributes.Max());
-   // bottom_node_id = 0.0;
-   // bottom_node_id(2) = 1.0;
-   // bottom_node.Set(dim-1, new PWConstCoefficient(bottom_node_id));
-   // flattening.AddBoundaryIntegrator(new VectorBoundaryLFIntegrator(bottom_node), nbc_bdr);
-   // flattening.Assemble();
-
-   // L2_FECollection mat_fec(0, pmesh->Dimension());
-   // ParFiniteElementSpace mat_fes(pmesh, &mat_fec);
-   // ParGridFunction mat_gf(&mat_fes);
-   // FunctionCoefficient mat_coeff(gamma_func);
-   // mat_gf.ProjectCoefficient(mat_coeff);
-
    int source = 0; bool visc = false, vorticity = false;
-   // switch (param.sim.problem)
-   // {
-   //    case 0: if (pmesh->Dimension() == 2) { source = 1; } visc = false; break;
-   //    case 1: visc = true; break;
-   //    case 2: visc = true; break;
-   //    case 3: visc = true; S.HostRead(); break;
-   //    case 4: visc = false; break;
-   //    case 5: visc = true; break;
-   //    case 6: visc = true; break;
-   //    case 7: source = 2; visc = true; vorticity = true;  break;
-   //    default: MFEM_ABORT("Wrong problem specification!");
-   // }
    if (param.solver.impose_visc) { visc = true; }
 
    
@@ -1746,13 +1555,14 @@ int main(int argc, char *argv[])
    // defines the Mult() method that used by the time integrators.
    ode_solver->Init(geo);
    geo.ResetTimeStepEstimate();
-   double t = 0.0, dt = 0.0, t_old, dt_old = 0.0, h_min = 1.0;
-   // dt = geo.GetTimeStepEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
-   // h_min = geo.GetLengthEstimate(S, dt); // To provide dt before the estimate, initializing is necessary
+   double t = 0.0, dt = 1.0, t_old, dt_old = 0.0, h_min = 1.0;
+   
    dt = geo.GetTimeStepEstimate(S); // To provide dt before the estimate, initializing is necessary
+   dt = 1.0;
+
    h_min = geo.GetLengthEstimate(S); // To provide dt before the estimate, initializing is necessar
    double ini_h_min = h_min;
-   dt = init_dt;
+   
    bool last_step = false;
    int steps = 0;
    BlockVector S_old(S);
@@ -1941,6 +1751,11 @@ int main(int argc, char *argv[])
 
       if (param.tmop.tmop)
       {
+
+         double stretching_factor[] = {0.0, 0.0, 0.0};
+         Vector bb_min2, bb_max2;
+         double bb_center2[] = {0.0, 0.0, 0.0};
+         double bb_length2[] = {0.0, 0.0, 0.0};
 
          if(ti == 1 || (ti % param.tmop.remesh_steps) == 0 || cond_num > param.tmop.tmop_cond_num || global_min_vol < 1e3)
          {

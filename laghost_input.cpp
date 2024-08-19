@@ -9,8 +9,12 @@ namespace po = boost::program_options;
 
 #include "laghost_parameters.hpp"
 #include "laghost_input.hpp"
-// #include "matprops.hpp"
-// #include "utils.hpp"
+
+std::map<std::string, int> bc_unit_map = {
+    {"cm/yr", 1},
+    {"mm/yr", 2},
+    {"cm/s", 3}
+};
 
 // overarching function handling input parameters to be called during the main sequence.
 void read_and_assign_input_parameters(OptionsParser& args, Param& param, const int &myid)
@@ -165,7 +169,6 @@ void read_and_assign_input_parameters(OptionsParser& args, Param& param, const i
                                                                                  "2 - PMean.");
 
     args.Parse();
-
     if (!args.Good())
     {
         if (myid == 0)
@@ -177,6 +180,38 @@ void read_and_assign_input_parameters(OptionsParser& args, Param& param, const i
     if (myid == 0)
     {
         args.PrintOptions(std::cout);
+    }
+
+    // Further determine some parameters based on the input.
+    param.bc.vel_unit = 1.0; // m/s to m/s. 
+    // See laghost_parameters.hpp for the mapping.
+    switch (bc_unit_map[param.bc.bc_unit]) {
+        case 1: // cm/yr to m/s. 
+            param.bc.vel_unit = 1.0e-2 / YEAR2SEC;
+            break;
+        case 2: // mm/yr to m/s
+            param.bc.vel_unit = 1.0e-3 / YEAR2SEC;
+            break;
+        case 3: // cm/s to m/s
+            param.bc.vel_unit = 1.0e-2;
+            break;
+        default: // already in m/s
+            break;
+    }
+
+    param.tmop.mesh_poly_deg = param.mesh.order_v;
+    param.tmop.quad_order = 2*param.mesh.order_v - 1; // integration order = 2p  - 1
+
+    if(param.sim.max_tsteps > -1)
+        param.sim.t_final = 1.0e38; // set a large number to avoid the final time restriction.
+    if(param.sim.year) {
+        param.sim.t_final = param.sim.t_final * YEAR2SEC;
+        if ( myid == 0)
+            std::cout << "Use years in output instead of seconds is true" << std::endl;
+    }
+    else {
+        if ( myid == 0 )
+            std::cout << "Use seconds in output instead of years is true" << std::endl;
     }
 }
 
