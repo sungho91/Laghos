@@ -130,7 +130,7 @@ void TMOPUpdate(BlockVector &S, BlockVector &S_old,
                // ParLinearForm &flattening,
                int dim, bool amr);
 
-static void Generate_and_refine_initial_mesh(Mesh *&mesh, Param &param, const MPI_Session &mpi)
+static void Generate_and_refine_initial_mesh(Mesh *&mesh, Param &param)
 {
    if (param.mesh.mesh_file.compare("default") != 0)
       mesh = new Mesh(param.mesh.mesh_file.c_str(), true, true);
@@ -182,7 +182,7 @@ static void Generate_and_refine_initial_mesh(Mesh *&mesh, Param &param, const MP
    // 1D vs partial assembly sanity check.
    if (param.solver.p_assembly && dim == 1) {
       param.solver.p_assembly = false;
-      if (mpi.Root())
+      if (Mpi::Root())
          cout << "Laghos does not support PA in 1D. Switching to FA." << endl;
    }
 
@@ -190,7 +190,7 @@ static void Generate_and_refine_initial_mesh(Mesh *&mesh, Param &param, const MP
    for (int lev = 0; lev < param.mesh.rs_levels; lev++) {
       mesh->UniformRefinement();
    }
-   if (mpi.Root())
+   if (Mpi::Root())
       cout << "Number of zones in the serial mesh: " << mesh->GetNE() << endl;
 
    // and then refine locally. Non-conforming elements might be generated at this stage.
@@ -215,9 +215,9 @@ static void Generate_and_refine_initial_mesh(Mesh *&mesh, Param &param, const MP
    }
 }
 
-static void Partition_initial_mesh(ParMesh *&pmesh, Mesh *&mesh, Param &param, const MPI_Session &mpi)
+static void Partition_initial_mesh(ParMesh *&pmesh, Mesh *&mesh, Param &param)
 {
-   const int num_tasks = mpi.WorldSize();
+   const int num_tasks = Mpi::WorldSize();
    int unit = 1;
    const int dim = mesh->Dimension();
    int *nxyz = new int[dim];
@@ -335,7 +335,7 @@ static void Partition_initial_mesh(ParMesh *&pmesh, Mesh *&mesh, Param &param, c
          nxyz[2] = 2 * unit;
          break;
       default:
-         if ( mpi.Root() )
+         if ( Mpi::Root() )
             cout << "Unknown partition type: " << param.mesh.partition_type << '\n';
          delete mesh;
          MPI_Finalize();
@@ -373,7 +373,7 @@ static void Partition_initial_mesh(ParMesh *&pmesh, Mesh *&mesh, Param &param, c
    }
    else
    {
-      if ( mpi.Root() )
+      if ( Mpi::Root() )
       {
          cout << "Non-Cartesian partitioning through METIS will be used.\n";
 #ifndef MFEM_USE_METIS
@@ -393,7 +393,7 @@ static void Partition_initial_mesh(ParMesh *&pmesh, Mesh *&mesh, Param &param, c
    int NE = pmesh->GetNE(), ne_min, ne_max;
    MPI_Reduce(&NE, &ne_min, 1, MPI_INT, MPI_MIN, 0, pmesh->GetComm());
    MPI_Reduce(&NE, &ne_max, 1, MPI_INT, MPI_MAX, 0, pmesh->GetComm());
-   if( mpi.Root() )
+   if( Mpi::Root() )
       cout << "Zones min/max: " << ne_min << " " << ne_max << endl;
 
 }
@@ -415,18 +415,17 @@ static void Collect_boundingbox_info( ParMesh *pmesh, Param &param, Vector &bb_c
 int main(int argc, char *argv[])
 {
    // Initialize MPI.
-   mfem::MPI_Session mpi(argc, argv);
-   const int myid = mpi.WorldRank();
+   Mpi::Init();
+   int myid = Mpi::WorldRank();
+   Hypre::Init();
 
    // Print the banner.
-   if (mpi.Root()) { display_banner(cout); }
+   if (Mpi::Root()) { display_banner(cout); }
 
    // Take care of input parameters given in a file or command line.
    OptionsParser args(argc, argv);
    Param param;
    read_and_assign_input_parameters( args, param, myid );
-
-   int num_materials = 1;
 
    // Remeshing performs using the Target-Matrix Optimization Paradigm (TMOP)
    bool mesh_changed = false;
@@ -435,7 +434,7 @@ int main(int argc, char *argv[])
    // Configure the device from the command line options
    Device backend;
    backend.Configure(param.sim.device, param.sim.dev);
-   if (mpi.Root()) { backend.Print(); }
+   if (Mpi::Root()) { backend.Print(); }
    backend.SetGPUAwareMPI(param.sim.gpu_aware_mpi);
 
    // Create, refine and partition the starting mesh.
@@ -443,9 +442,9 @@ int main(int argc, char *argv[])
    ParMesh *pmesh = nullptr;
    // On all processors, use the default builtin 1D/2D/3D mesh or read the
    // serial one given on the command line.
-   Generate_and_refine_initial_mesh(mesh, param, mpi);
+   Generate_and_refine_initial_mesh(mesh, param);
    // Parallel partitioning of the mesh.
-   Partition_initial_mesh(pmesh, mesh, param, mpi);
+   Partition_initial_mesh(pmesh, mesh, param);
 
    // Collect the bounding box info for the initial mesh for remeshing.
    Vector bb_center(pmesh->Dimension());
@@ -694,7 +693,7 @@ int main(int argc, char *argv[])
 
    const HYPRE_Int glob_size_l2 = L2FESpace.GlobalTrueVSize();
    const HYPRE_Int glob_size_h1 = H1FESpace.GlobalTrueVSize();
-   if (mpi.Root())
+   if (Mpi::Root())
    {
       cout << "Number of kinematic (position, velocity) dofs: "
            << glob_size_h1 << endl;
@@ -1153,7 +1152,7 @@ int main(int argc, char *argv[])
    // is to get a high-order representation of the initial condition. Note that
    // this density is a temporary function and it will not be updated during the
    // time evolution.
-   num_materials =pmesh->attributes.Max();
+   int num_materials = pmesh->attributes.Max();
    Vector z_rho(pmesh->attributes.Max());
    Vector s_rho(pmesh->attributes.Max());
 
@@ -1575,7 +1574,7 @@ int main(int argc, char *argv[])
 
    //   const double internal_energy = geo.InternalEnergy(e_gf);
    //   const double kinetic_energy = geo.KineticEnergy(v_gf);
-   //   if (mpi.Root())
+   //   if (Mpi::Root())
    //   {
    //      cout << std::fixed;
    //      cout << "step " << std::setw(5) << 0
@@ -1595,7 +1594,7 @@ int main(int argc, char *argv[])
    //      cout << endl;
    //   }
 
-   if (mpi.Root()) 
+   if (Mpi::Root()) 
    {
       std::cout<<""<<std::endl;
       std::cout<<"simulation starts"<<std::endl;
@@ -2301,7 +2300,7 @@ int main(int argc, char *argv[])
 
       // if(mesh_changed){mesh_changed=false; dt_est=dt_est*1e-5;}
 
-      // const double dt_est = geo.GetTimeStepEstimate(S, dt, mpi.Root());
+      // const double dt_est = geo.GetTimeStepEstimate(S, dt, Mpi::Root());
       // const double dt_est = geo.GetTimeStepEstimate(S);
 
       // if (dt < std::numeric_limits<double>::epsilon())
@@ -2359,7 +2358,7 @@ int main(int argc, char *argv[])
             p_gf = p_gf_old; ini_p_gf = ini_p_old_gf;
             // if(surface_diff){x_top=x_top_old; topo=topo_t_old;}
             geo.ResetQuadratureData();
-            // if (mpi.Root()) { cout << "Repeating step " << ti << ", dt " << dt/86400/365.25 << std::setprecision(6) << std::scientific << " yr" << endl; }
+            // if (Mpi::Root()) { cout << "Repeating step " << ti << ", dt " << dt/86400/365.25 << std::setprecision(6) << std::scientific << " yr" << endl; }
             if (steps < param.sim.max_tsteps) { last_step = false; }
             ti--; continue;
          }
@@ -2528,7 +2527,7 @@ int main(int argc, char *argv[])
 
          if(param.sim.year)
          {
-            if (mpi.Root())
+            if (Mpi::Root())
             {
             const double sqrt_norm = sqrt(norm);
 
@@ -2560,7 +2559,7 @@ int main(int argc, char *argv[])
          }
          else
          {
-            if (mpi.Root())
+            if (Mpi::Root())
             {
             const double sqrt_norm = sqrt(norm);
 
@@ -2693,7 +2692,7 @@ int main(int argc, char *argv[])
       case 7: steps *= 2;
    }
 
-   geo.PrintTimingData(mpi.Root(), steps, param.sim.fom);
+   geo.PrintTimingData(Mpi::Root(), steps, param.sim.fom);
 
    if (param.sim.mem_usage)
    {
@@ -2704,7 +2703,7 @@ int main(int argc, char *argv[])
 
    const double energy_final = geo.InternalEnergy(e_gf) +
                                geo.KineticEnergy(v_gf);
-   if (mpi.Root())
+   if (Mpi::Root())
    {
       cout << endl;
       cout << "Energy  diff: " << std::scientific << std::setprecision(2)
@@ -2723,7 +2722,7 @@ int main(int argc, char *argv[])
       const double error_max = v_gf.ComputeMaxError(v_coeff),
                    error_l1  = v_gf.ComputeL1Error(v_coeff),
                    error_l2  = v_gf.ComputeL2Error(v_coeff);
-      if (mpi.Root())
+      if (Mpi::Root())
       {
          cout << "L_inf  error: " << error_max << endl
               << "L_1    error: " << error_l1 << endl
